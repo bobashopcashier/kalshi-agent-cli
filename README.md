@@ -67,6 +67,9 @@ make check
 ```
 
 These commands make no network requests. Their schemas are the same compiled registry used for argument parsing, planning, effect metadata, and request construction.
+
+For the supported MVP commands, an agent can construct and validate calls from this offline registry without searching Kalshi's documentation first. Because command names, parameter constraints, effects, and projectable response fields come from the same data the CLI enforces, the agent does not have to guess endpoint shapes, flags, or field names—reducing opportunities for API hallucinations. External documentation may still be needed for market-specific business semantics, changing upstream behavior, or API operations outside this CLI's supported surface.
+
 Add `command.response_schema,command.docs_url` only when response semantics or upstream documentation are needed. To discover valid projection paths without returning the whole schema, select `command.response_schema.x-projectable-fields`.
 
 ## Strict parameters and convenience flags
