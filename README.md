@@ -2,7 +2,11 @@
 
 `kalshi` is a JSON-first, agent-native Go CLI for Kalshi's Predictions Trade API. It exposes a small, current V2 surface through one authoritative offline registry, strict schemas, bounded execution, and explicit mutation gates.
 
-This repository is an independent implementation. It is not affiliated with or endorsed by Kalshi.
+| Path | Output bytes | Output tokens | Command + output tokens | Median time |
+|---|---:|---:|---:|---:|
+| Raw `curl` | 6,916 | 2,193 | 2,255 | 223.2 ms |
+| CLI with `--fields` | 1,362 | 451 | 494 | 224.7 ms |
+| Observed reduction | **80.3%** | **79.4%** | **78.1%** | Tied |
 
 ## Install
 
@@ -119,11 +123,7 @@ Prefer compact JSON for model consumption. For network list commands, NDJSON is 
 
 A live production benchmark on 2026-07-31 fetched the same four open `KXFED` markets. Raw `curl` returned every market field; the CLI retained only `ticker`, `title`, and `close_time` while preserving its versioned safety and pagination envelope.
 
-| Path | Output bytes | Output tokens | Command + output tokens | Median time |
-|---|---:|---:|---:|---:|
-| Raw `curl` | 6,916 | 2,193 | 2,255 | 223.2 ms |
-| CLI with `--fields` | 1,362 | 451 | 494 | 224.7 ms |
-| Observed reduction | **80.3%** | **79.4%** | **78.1%** | Effectively tied |
+
 
 ```sh
 curl -sS --fail-with-body --compressed \
