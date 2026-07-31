@@ -3,7 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 
 	"kalshi-agent-cli/internal/contract"
@@ -30,7 +30,7 @@ func render(w io.Writer, env *contract.Envelope, opts options, collection string
 	if opts.Format == "ndjson" {
 		payload, err = boundedNDJSON(env, collection, opts.MaxBytes)
 	} else {
-		payload, err = boundedJSON(env, collection, opts.Pretty, opts.MaxBytes)
+		payload, err = boundedJSON(env, opts.Pretty, opts.MaxBytes)
 	}
 	if err != nil {
 		return err
@@ -39,7 +39,7 @@ func render(w io.Writer, env *contract.Envelope, opts options, collection string
 	return err
 }
 
-func boundedJSON(env *contract.Envelope, collection string, pretty bool, maxBytes int) ([]byte, error) {
+func boundedJSON(env *contract.Envelope, pretty bool, maxBytes int) ([]byte, error) {
 	encode := func() ([]byte, error) {
 		var raw []byte
 		var err error
@@ -54,41 +54,11 @@ func boundedJSON(env *contract.Envelope, collection string, pretty bool, maxByte
 		return raw, err
 	}
 	raw, err := encode()
-	if err != nil || len(raw) <= maxBytes {
+	if err != nil {
 		return raw, err
 	}
-	items, ok := collectionItems(env.Data, collection)
-	addReason(&env.Meta.Truncation, "max_bytes")
-	if ok {
-		low, high := 0, len(items)
-		for low < high {
-			mid := (low + high + 1) / 2
-			setCollection(env.Data, collection, items[:mid])
-			if env.Meta.Pagination != nil {
-				env.Meta.Pagination.ItemsReturned = mid
-			}
-			candidate, err := encode()
-			if err == nil && len(candidate) <= maxBytes {
-				low = mid
-			} else {
-				high = mid - 1
-			}
-		}
-		setCollection(env.Data, collection, items[:low])
-		if env.Meta.Pagination != nil {
-			env.Meta.Pagination.ItemsReturned = low
-		}
-		raw, err = encode()
-	}
-	if !ok || len(raw) > maxBytes {
-		env.Data = map[string]any{"omitted": true, "reason": "max_bytes"}
-		raw, err = encode()
-	}
-	if err != nil {
-		return nil, err
-	}
 	if len(raw) > maxBytes {
-		return nil, errors.New("max-bytes is too small for the stable envelope")
+		return nil, fmt.Errorf("output is %d bytes and exceeds --max-bytes=%d; add or narrow --fields, or raise the limit", len(raw), maxBytes)
 	}
 	return raw, nil
 }
@@ -103,18 +73,10 @@ func boundedNDJSON(env *contract.Envelope, collection string, maxBytes int) ([]b
 			return nil, err
 		}
 		raw = append(raw, '\n')
-		if len(raw) <= maxBytes {
-			return raw, nil
+		if len(raw) > maxBytes {
+			return nil, fmt.Errorf("output is %d bytes and exceeds --max-bytes=%d; add or narrow --fields, or raise the limit", len(raw), maxBytes)
 		}
-		addReason(&env.Meta.Truncation, "max_bytes")
-		env.Data = map[string]any{"omitted": true, "reason": "max_bytes"}
-		copyEnv = *env
-		copyEnv.RecordType = "result"
-		raw, err = json.Marshal(copyEnv)
-		if err != nil || len(raw)+1 > maxBytes {
-			return nil, errors.New("max-bytes is too small for the stable envelope")
-		}
-		return append(raw, '\n'), nil
+		return raw, nil
 	}
 	encode := func(count int) ([]byte, error) {
 		var out bytes.Buffer
@@ -150,26 +112,11 @@ func boundedNDJSON(env *contract.Envelope, collection string, maxBytes int) ([]b
 		return out.Bytes(), nil
 	}
 	raw, err := encode(len(items))
-	if err == nil && len(raw) <= maxBytes {
-		return raw, nil
-	}
-	addReason(&env.Meta.Truncation, "max_bytes")
-	low, high := 0, len(items)
-	for low < high {
-		mid := (low + high + 1) / 2
-		candidate, candidateErr := encode(mid)
-		if candidateErr == nil && len(candidate) <= maxBytes {
-			low = mid
-		} else {
-			high = mid - 1
-		}
-	}
-	raw, err = encode(low)
 	if err != nil {
 		return nil, err
 	}
 	if len(raw) > maxBytes {
-		return nil, errors.New("max-bytes is too small for the NDJSON summary")
+		return nil, fmt.Errorf("output is %d bytes and exceeds --max-bytes=%d; add or narrow --fields, or raise the limit", len(raw), maxBytes)
 	}
 	return raw, nil
 }
@@ -184,12 +131,6 @@ func collectionItems(data any, collection string) ([]any, bool) {
 	}
 	items, ok := obj[collection].([]any)
 	return items, ok
-}
-
-func setCollection(data any, collection string, items []any) {
-	if obj, ok := data.(map[string]any); ok {
-		obj[collection] = items
-	}
 }
 
 func addReason(truncation *contract.Truncation, reason string) {

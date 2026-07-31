@@ -15,7 +15,7 @@ var commands = []Command{
 		SchemaVersion: commandSchemaVersion, Name: "exchange.status", CLIPath: []string{"exchange", "status"},
 		Summary: "Get current exchange and trading status.", Method: "GET", Path: "/exchange/status",
 		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{}),
-		ResponseSchema: responseObject(map[string]ResponseField{"exchange_active": responseField("boolean", "Whether the exchange accepts state changes."), "trading_active": responseField("boolean", "Whether trading is active.")}, "exchange_active", "trading_active"), DocsURL: "https://docs.kalshi.com/api-reference/exchange/get-exchange-status",
+		ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"exchange_active": responseField("boolean", "Whether the exchange accepts state changes."), "trading_active": responseField("boolean", "Whether trading is active.")}, "exchange_active", "trading_active"), "exchange_active", "trading_active"), DocsURL: "https://docs.kalshi.com/api-reference/exchange/get-exchange-status",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "markets.list", CLIPath: []string{"markets", "list"},
@@ -37,14 +37,14 @@ var commands = []Command{
 			"tickers":        withPattern(str("query", "Comma-separated market tickers."), `^[A-Z0-9._,-]{1,2048}$`),
 			"mve_filter":     withEnum(str("query", "Include only or exclude multivariate events."), "only", "exclude"),
 		}),
-		ResponseSchema: paginatedResponse("markets", nil), DocsURL: "https://docs.kalshi.com/api-reference/market/get-markets",
+		ResponseSchema: withProjectable(paginatedResponse("markets", nil), marketProjectableFields...), DocsURL: "https://docs.kalshi.com/api-reference/market/get-markets",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "markets.get", CLIPath: []string{"markets", "get"},
 		Summary: "Get one market by ticker.", Method: "GET", Path: "/markets/{ticker}",
 		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
 			"ticker": withPattern(str("path", "Market ticker."), tickerPattern),
-		}, "ticker"), ResponseSchema: responseObject(map[string]ResponseField{"market": responseField("object", "Market object.")}, "market"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market",
+		}, "ticker"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"market": responseField("object", "Market object.")}, "market"), prefixedFields("market", marketProjectableFields)...), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "events.list", CLIPath: []string{"events", "list"},
@@ -60,7 +60,7 @@ var commands = []Command{
 			"tickers":             withPattern(str("query", "Comma-separated event tickers."), `^[A-Z0-9._,-]{1,2048}$`),
 			"min_close_ts":        integer("query", "Minimum close Unix timestamp in seconds.", 0, 4102444800),
 			"min_updated_ts":      integer("query", "Minimum metadata update Unix timestamp in seconds.", 0, 4102444800),
-		}), ResponseSchema: paginatedResponse("events", map[string]ResponseField{"milestones": responseField("array", "Optional related milestones.")}), DocsURL: "https://docs.kalshi.com/api-reference/events/get-events",
+		}), ResponseSchema: withProjectable(paginatedResponse("events", map[string]ResponseField{"milestones": responseField("array", "Optional related milestones.")}), eventProjectableFields...), DocsURL: "https://docs.kalshi.com/api-reference/events/get-events",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "events.get", CLIPath: []string{"events", "get"},
@@ -68,7 +68,7 @@ var commands = []Command{
 		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
 			"event_ticker":        withPattern(str("path", "Event ticker."), tickerPattern),
 			"with_nested_markets": boolean("query", "Include live-tier nested markets."),
-		}), ResponseSchema: responseObject(map[string]ResponseField{"event": responseField("object", "Event object."), "markets": responseField("array", "Associated markets; deprecated in favor of nested markets.")}, "event", "markets"), DocsURL: "https://docs.kalshi.com/api-reference/events/get-event",
+		}, "event_ticker"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"event": responseField("object", "Event object."), "markets": responseField("array", "Associated markets; deprecated in favor of nested markets.")}, "event", "markets"), append(prefixedFields("event", eventProjectableFields), prefixedFields("markets", marketProjectableFields)...)...), DocsURL: "https://docs.kalshi.com/api-reference/events/get-event",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "orderbook.get", CLIPath: []string{"orderbook", "get"},
@@ -76,7 +76,7 @@ var commands = []Command{
 		Effect: Effect{Class: "read", Network: true, AuthOptional: true}, ParamsSchema: objectSchema(map[string]Field{
 			"ticker": withPattern(str("path", "Market ticker."), tickerPattern),
 			"depth":  integer("query", "Orderbook depth; 0 means all levels.", 0, 100),
-		}, "ticker"), ResponseSchema: responseObject(map[string]ResponseField{"orderbook_fp": responseField("object", "Fixed-point YES and NO bid levels.")}, "orderbook_fp"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market-orderbook",
+		}, "ticker"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"orderbook_fp": responseField("object", "Fixed-point YES and NO bid levels.")}, "orderbook_fp"), "orderbook_fp", "orderbook_fp.yes_dollars", "orderbook_fp.no_dollars"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market-orderbook",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "trades.list", CLIPath: []string{"trades", "list"},
@@ -89,7 +89,7 @@ var commands = []Command{
 			"min_ts":         integer("query", "Minimum trade Unix timestamp.", 0, 4102444800),
 			"max_ts":         integer("query", "Maximum trade Unix timestamp.", 0, 4102444800),
 			"is_block_trade": boolean("query", "Filter by block-trade status."),
-		}), ResponseSchema: paginatedResponse("trades", nil), DocsURL: "https://docs.kalshi.com/api-reference/market/get-trades",
+		}), ResponseSchema: withProjectable(paginatedResponse("trades", nil), tradeProjectableFields...), DocsURL: "https://docs.kalshi.com/api-reference/market/get-trades",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "portfolio.balance", CLIPath: []string{"portfolio", "balance"},
@@ -97,7 +97,7 @@ var commands = []Command{
 		Effect: Effect{Class: "read", Network: true, AuthRequired: true}, ParamsSchema: objectSchema(map[string]Field{
 			"subaccount":     integer("query", "Subaccount number; 0 is primary.", 0, 63),
 			"exchange_index": integer("query", "Exchange shard index.", 0, 1024),
-		}), ResponseSchema: responseObject(map[string]ResponseField{"balance": responseField("integer", "Available balance in cents."), "balance_dollars": responseField("string", "Available balance as fixed-point dollars."), "portfolio_value": responseField("integer", "Portfolio value in cents."), "updated_ts": responseField("integer", "Upstream update timestamp.")}, "balance", "balance_dollars", "portfolio_value", "updated_ts"), DocsURL: "https://docs.kalshi.com/api-reference/portfolio/get-balance",
+		}), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"balance": responseField("integer", "Available balance in cents."), "balance_dollars": responseField("string", "Available balance as fixed-point dollars."), "portfolio_value": responseField("integer", "Portfolio value in cents."), "updated_ts": responseField("integer", "Upstream update timestamp.")}, "balance", "balance_dollars", "portfolio_value", "updated_ts"), "balance", "balance_dollars", "portfolio_value", "updated_ts"), DocsURL: "https://docs.kalshi.com/api-reference/portfolio/get-balance",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "orders.list", CLIPath: []string{"orders", "list"},
@@ -112,14 +112,14 @@ var commands = []Command{
 			"limit":        integer("query", "Results per upstream page.", 1, 1000),
 			"cursor":       str("query", "Opaque pagination cursor."),
 			"subaccount":   integer("query", "Subaccount number; omit for all.", 0, 63),
-		}), ResponseSchema: paginatedResponse("orders", nil), DocsURL: "https://docs.kalshi.com/api-reference/orders/get-orders",
+		}), ResponseSchema: withProjectable(paginatedResponse("orders", nil), orderProjectableFields...), DocsURL: "https://docs.kalshi.com/api-reference/orders/get-orders",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "orders.get", CLIPath: []string{"orders", "get"},
 		Summary: "Get one authenticated order by exchange order ID.", Method: "GET", Path: "/portfolio/orders/{order_id}",
 		Effect: Effect{Class: "read", Network: true, AuthRequired: true}, ParamsSchema: objectSchema(map[string]Field{
 			"order_id": withPattern(str("path", "Exchange order ID."), idPattern),
-		}, "order_id"), ResponseSchema: responseObject(map[string]ResponseField{"order": responseField("object", "Order object.")}, "order"), DocsURL: "https://docs.kalshi.com/api-reference/orders/get-order",
+		}, "order_id"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"order": responseField("object", "Order object.")}, "order"), prefixedFields("order", orderProjectableFields)...), DocsURL: "https://docs.kalshi.com/api-reference/orders/get-order",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "orders.reconcile", CLIPath: []string{"orders", "reconcile"},
@@ -132,7 +132,7 @@ var commands = []Command{
 			"limit":           integer("query", "Results per upstream page.", 1, 1000),
 			"cursor":          str("query", "Opaque pagination cursor."),
 			"subaccount":      integer("query", "Subaccount number; omit for all.", 0, 63),
-		}, "client_order_id"), ResponseSchema: paginatedResponse("orders", nil), DocsURL: "https://docs.kalshi.com/api-reference/orders/get-orders",
+		}, "client_order_id"), ResponseSchema: withProjectable(paginatedResponse("orders", nil), orderProjectableFields...), DocsURL: "https://docs.kalshi.com/api-reference/orders/get-orders",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "orders.create", CLIPath: []string{"orders", "create"},

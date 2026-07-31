@@ -30,6 +30,21 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 		if cmd.ResponseSchema.Dialect == "" || len(cmd.ResponseSchema.Properties) == 0 {
 			t.Errorf("%s is missing machine-readable response schema", cmd.Name)
 		}
+		if cmd.Effect.Class == "read" {
+			if len(cmd.ResponseSchema.ProjectableFields) == 0 {
+				t.Errorf("%s is missing projectable response paths", cmd.Name)
+			}
+			seenFields := map[string]bool{}
+			for i, field := range cmd.ResponseSchema.ProjectableFields {
+				if seenFields[field] {
+					t.Errorf("%s repeats projectable field %s", cmd.Name, field)
+				}
+				seenFields[field] = true
+				if i > 0 && cmd.ResponseSchema.ProjectableFields[i-1] > field {
+					t.Errorf("%s projectable fields are not sorted", cmd.Name)
+				}
+			}
+		}
 		for _, required := range cmd.ParamsSchema.Required {
 			if _, ok := cmd.ParamsSchema.Properties[required]; !ok {
 				t.Errorf("%s requires missing property %s", cmd.Name, required)

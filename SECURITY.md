@@ -12,9 +12,11 @@ Implemented controls:
 - RSA-PSS/SHA-256 request signing with query strings excluded exactly as Kalshi specifies;
 - redirects disabled in the default HTTP client so auth headers cannot be forwarded to another origin;
 - upstream response caps before JSON decoding;
-- structural output caps that preserve valid JSON/NDJSON and truncation metadata;
+- type, Unicode-safety, cycle, and 64 KiB bounds on upstream pagination cursors before reuse or metadata emission;
+- local response projection before sanitization and byte accounting, with strict bounded field-path syntax;
+- atomic output caps that fail closed rather than dropping fetched records while exposing a later cursor;
 - recursive terminal/C0/C1/ANSI/bidi sanitization of upstream data and error details;
-- policy evaluation and digest confirmation before credential loading;
+- policy evaluation and digest confirmation before credential loading, with confirmation digests emitted only by explicit dry-runs;
 - an architectural dry-run branch before credentials, DNS, HTTP, or mutation;
 - no generic write retries, and explicit unknown-outcome reconciliation guidance.
 
