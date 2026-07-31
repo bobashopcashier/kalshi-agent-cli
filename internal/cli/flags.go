@@ -12,6 +12,7 @@ import (
 
 type options struct {
 	ParamsRaw               string
+	Fields                  []string
 	Format                  string
 	Pretty                  bool
 	MaxPages                int
@@ -83,6 +84,12 @@ func parseOptions(cmd *registry.Command, args []string, isTTY bool) (options, ma
 		switch name {
 		case "params":
 			opts.ParamsRaw = value
+		case "fields":
+			fields, err := parseFields(value)
+			if err != nil {
+				return opts, nil, err
+			}
+			opts.Fields = fields
 		case "output":
 			opts.Format = value
 		case "pretty":
@@ -205,7 +212,7 @@ func canonicalGlobal(name string) string {
 	switch name {
 	case "env":
 		return "environment"
-	case "params", "output", "pretty", "compact", "ndjson", "max-pages", "max-items", "max-bytes", "timeout", "dry-run", "environment", "credentials-file", "authenticated", "write-policy", "confirm", "max-order-count", "max-order-notional-dollars", "help":
+	case "params", "fields", "output", "pretty", "compact", "ndjson", "max-pages", "max-items", "max-bytes", "timeout", "dry-run", "environment", "credentials-file", "authenticated", "write-policy", "confirm", "max-order-count", "max-order-notional-dollars", "help":
 		return name
 	default:
 		return ""
@@ -223,10 +230,11 @@ func boundedInt(name, raw string, min, max int) (int, error) {
 func globalOptionSchema() map[string]any {
 	return map[string]any{
 		"params":                     map[string]any{"type": "string", "description": "Strict JSON object; unknown and duplicate keys are rejected."},
+		"fields":                     map[string]any{"type": "string", "description": "Comma-separated registry-validated dotted response fields. Paths are item-relative for paginated collections and data-root-relative otherwise."},
 		"output":                     map[string]any{"type": "string", "enum": []string{"json", "ndjson"}, "default": "json"},
 		"pretty":                     map[string]any{"type": "boolean", "description": "Pretty-print JSON."},
 		"compact":                    map[string]any{"type": "boolean", "description": "Compact JSON."},
-		"ndjson":                     map[string]any{"type": "boolean", "description": "Emit collection items plus a final summary record."},
+		"ndjson":                     map[string]any{"type": "boolean", "description": "For network list commands, emit item records plus a final summary; local discovery emits one result record."},
 		"max_pages":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 10, "default": 1},
 		"max_items":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
 		"max_bytes":                  map[string]any{"type": "integer", "minimum": 1024, "maximum": 8 << 20, "default": 1 << 20},

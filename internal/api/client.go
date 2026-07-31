@@ -50,6 +50,11 @@ func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream HTTP %d: %s", e.Status, e.Message)
 }
 
+type CredentialError struct{ Err error }
+
+func (e *CredentialError) Error() string { return e.Err.Error() }
+func (e *CredentialError) Unwrap() error { return e.Err }
+
 func (c *Client) Do(ctx context.Context, in Request) (map[string]any, error) {
 	base, err := url.Parse(c.BaseURL)
 	if err != nil {
@@ -79,11 +84,11 @@ func (c *Client) Do(ctx context.Context, in Request) (map[string]any, error) {
 	}
 	if in.Auth {
 		if c.Credentials == nil {
-			return nil, errors.New("authenticated command has no credential source")
+			return nil, &CredentialError{Err: errors.New("authenticated command has no credential source")}
 		}
 		creds, err := c.Credentials()
 		if err != nil {
-			return nil, err
+			return nil, &CredentialError{Err: err}
 		}
 		now := time.Now
 		if c.Now != nil {
@@ -92,7 +97,7 @@ func (c *Client) Do(ctx context.Context, in Request) (map[string]any, error) {
 		ts := strconv.FormatInt(now().UnixMilli(), 10)
 		signature, err := creds.Sign(ts, in.Method, req.URL.EscapedPath())
 		if err != nil {
-			return nil, fmt.Errorf("sign request: %w", err)
+			return nil, &CredentialError{Err: fmt.Errorf("sign request: %w", err)}
 		}
 		req.Header.Set("KALSHI-ACCESS-KEY", creds.KeyID)
 		req.Header.Set("KALSHI-ACCESS-TIMESTAMP", ts)

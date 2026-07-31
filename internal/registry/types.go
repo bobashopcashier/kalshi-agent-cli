@@ -1,5 +1,7 @@
 package registry
 
+import "sort"
+
 type Effect struct {
 	Class                string `json:"class"`
 	Network              bool   `json:"network"`
@@ -45,6 +47,7 @@ type ResponseSchema struct {
 	Required             []string                 `json:"required,omitempty"`
 	CollectionField      string                   `json:"x-collection-field,omitempty"`
 	CursorField          string                   `json:"x-cursor-field,omitempty"`
+	ProjectableFields    []string                 `json:"x-projectable-fields,omitempty"`
 }
 
 type Command struct {
@@ -102,4 +105,19 @@ func paginatedResponse(collection string, extra map[string]ResponseField) Respon
 	schema := responseObject(properties, collection, "cursor")
 	schema.CollectionField, schema.CursorField = collection, "cursor"
 	return schema
+}
+
+func withProjectable(schema ResponseSchema, fields ...string) ResponseSchema {
+	schema.ProjectableFields = append([]string(nil), fields...)
+	sort.Strings(schema.ProjectableFields)
+	return schema
+}
+
+func prefixedFields(prefix string, fields []string) []string {
+	out := make([]string, 1, len(fields)+1)
+	out[0] = prefix
+	for _, field := range fields {
+		out = append(out, prefix+"."+field)
+	}
+	return out
 }

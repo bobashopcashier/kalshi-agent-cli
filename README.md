@@ -57,11 +57,17 @@ make check
 ## Discover the contract offline
 
 ```sh
-./bin/kalshi commands list --compact
-./bin/kalshi commands describe orders.create --pretty
+./bin/kalshi commands list \
+  --fields registry_version,commands.name,commands.summary \
+  --compact
+
+./bin/kalshi commands describe orders.create \
+  --fields command.name,command.summary,command.effect,command.params_schema \
+  --compact
 ```
 
 These commands make no network requests. Their schemas are the same compiled registry used for argument parsing, planning, effect metadata, and request construction.
+Add `command.response_schema,command.docs_url` only when response semantics or upstream documentation are needed. To discover valid projection paths without returning the whole schema, select `command.response_schema.x-projectable-fields`.
 
 ## Strict parameters and convenience flags
 
@@ -86,9 +92,61 @@ Unknown keys, duplicate JSON keys, wrong types, trailing JSON, control/bidi char
 
 Every result uses `schema_version: "kalshi.agent/v1"`. JSON is compact by default when stdout is not a TTY and pretty on a TTY. Override with `--compact`, `--pretty`, or `--ndjson`.
 
-List commands default to one page, 100 items, and a 1 MiB final output budget. Hard flag ceilings are 10 pages, 1,000 items, and 8 MiB. Successful partial results set `meta.truncation.truncated`, name the reasons (`max_pages`, `max_items`, or `max_bytes`), and preserve `next_cursor`.
+Use `--fields` to keep model context focused:
 
-NDJSON emits one versioned `record_type: "item"` envelope per item and always reserves room for a final `record_type: "summary"` envelope.
+```sh
+./bin/kalshi markets list \
+  --params '{"status":"open","limit":100}' \
+  --fields ticker,title,close_time,yes_bid_dollars,yes_ask_dollars \
+  --max-pages 2 \
+  --max-items 150 \
+  --compact
+```
+
+Fields are comma-separated, case-sensitive dotted member paths. For paginated commands they are relative to each collection item; the collection wrapper, upstream cursor, and pagination metadata are always retained. For non-paginated reads and discovery they are relative to `data`, so a single market uses `--fields market.ticker,market.title`. Dotted traversal applies elementwise through arrays: `price_ranges.start` means `price_ranges[*].start`. Projection is local and is never sent to Kalshi.
+
+Network-command selectors are checked before execution against the offline registry's `x-projectable-fields`; typos fail without a request. Valid optional fields that are absent from a particular response are simply omitted. The path grammar supports identifier-like JSON keys, hyphens, and `$schema`; keys containing literal dots are not projectable.
+
+`--fields` is available for successful reads and discovery. It is rejected for mutations, dry-runs, and command help so it cannot hide a write result, plan, digest, or contract.
+
+List commands default to one page, 100 items, and a 1 MiB final output budget. Hard flag ceilings are 10 pages, 1,000 items, and 8 MiB. Successful partial results caused by page or item ceilings set `meta.truncation.truncated`, name the reasons (`max_pages` or `max_items`), and preserve `next_cursor`.
+
+The final result must fit `--max-bytes` atomically. If it does not, the CLI returns `OUTPUT_LIMIT` and no partial success or post-page cursor. Add or narrow fields, or raise the cap. This fail-closed behavior is a safety correction from the earlier successful render-time truncation contract: an opaque upstream cursor cannot safely resume midway through omitted records.
+
+Prefer compact JSON for model consumption. For network list commands, NDJSON is an atomically buffered, line-oriented interchange format; it emits one versioned `record_type: "item"` envelope per item and a final `record_type: "summary"` envelope, so its repeated metadata usually costs more tokens. Local discovery emits one `record_type: "result"` record.
+
+### Agent-context benchmark: raw `curl` versus `--fields`
+
+A live production benchmark on 2026-07-31 fetched the same four open `KXFED` markets. Raw `curl` returned every market field; the CLI retained only `ticker`, `title`, and `close_time` while preserving its versioned safety and pagination envelope.
+
+| Path | Output bytes | Output tokens | Command + output tokens | Median time |
+|---|---:|---:|---:|---:|
+| Raw `curl` | 6,916 | 2,193 | 2,255 | 223.2 ms |
+| CLI with `--fields` | 1,362 | 451 | 494 | 224.7 ms |
+| Observed reduction | **80.3%** | **79.4%** | **78.1%** | Effectively tied |
+
+```sh
+curl -sS --fail-with-body --compressed \
+  --get https://external-api.kalshi.com/trade-api/v2/markets \
+  --data-urlencode status=open \
+  --data-urlencode series_ticker=KXFED \
+  --data-urlencode limit=4
+```
+
+```sh
+./bin/kalshi markets list \
+  --environment production \
+  --status open \
+  --series-ticker KXFED \
+  --limit 4 \
+  --max-items 4 \
+  --fields ticker,title,close_time \
+  --compact
+```
+
+The benchmark used two warmups followed by 15 serial, randomized runs per path. Token counts use the `o200k_base` tokenizer. All measured rounds returned the same projected market values.
+
+`--fields` projects locally after downloading the response, so it reduces the JSON presented to the model rather than Kalshi's network payload. Median request speed was effectively unchanged: 223.2 ms for raw `curl` and 224.7 ms for the CLI. The gain is substantially smaller model context, not faster transport.
 
 ## Credentials
 
