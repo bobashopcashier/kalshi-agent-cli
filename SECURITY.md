@@ -18,6 +18,7 @@ Implemented controls:
 - recursive terminal/C0/C1/ANSI/bidi sanitization of upstream data and error details;
 - policy evaluation and digest confirmation before credential loading, with confirmation digests emitted only by explicit dry-runs;
 - an architectural dry-run branch before credentials, DNS, HTTP, or mutation;
+- bounded, context-aware HTTP `429` retries only for registry-declared reads;
 - no generic write retries, and explicit unknown-outcome reconciliation guidance.
 
 The CLI does not protect a compromised host, malicious Go toolchain, or a process with permission to read the user's credential files. Operators should use scoped demo keys during development, rotate exposed keys, and prefer narrow read scopes where Kalshi supports them.

@@ -40,10 +40,12 @@ An `unknown` result is deliberately non-retryable. Reconciliation is a separate 
 
 Defaults are one page, 100 items, 1 MiB final output, 30 seconds, and an 8 MiB upstream response cap per page. Flag hard ceilings are 10 pages, 1,000 items, 8 MiB output, and 60 seconds. Projection runs before sanitization and final byte accounting. A final result that exceeds `--max-bytes` fails atomically with `OUTPUT_LIMIT`; the CLI never removes fetched items while exposing the cursor after them. If an upstream page contains more items than the requested page limit, the CLI fails with `UPSTREAM_SCHEMA_MISMATCH` instead of slicing and advancing past omitted records.
 
+Registry-declared reads retry HTTP `429` up to five times per command, including across all pagination pages, with bounded equal-jitter exponential backoff. A valid `Retry-After` value is a minimum delay, and the existing command timeout bounds requests plus waits across all pages. Rate-limited attempts do not advance pagination counters. `meta.retry` exposes aggregate attempts/retries, exhaustion, the last rate-limit status, and a final server delay when present. Mutations, other HTTP statuses, and transport errors remain single-attempt; exhausted read rate limits retain the final retryable `429` error.
+
 ## Remaining design gaps
 
 - No durable local intent journal yet. The caller must persist the create params and `client_order_id` before submission if crash recovery across processes is required.
 - Reconciliation scans bounded `GET /portfolio/orders` pages because Kalshi exposes no direct client-ID query filter.
 - There is no automatic market metadata preflight for tick-step validation; doing so would violate zero-network dry-run unless provided as explicit offline input.
-- Read retries/backoff and live account-limit discovery are not implemented. This avoids accidental write retry coupling in the MVP.
+- Cross-process rate-limit coordination and live account-limit discovery are not implemented. Read `429` retries are deliberately per process and remain separated from mutation execution.
 - Projectable response paths cover the supported read surface, but the compact response schemas are not a lossless local copy of every upstream OpenAPI type constraint.

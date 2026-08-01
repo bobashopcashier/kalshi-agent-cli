@@ -39,11 +39,13 @@ type Request struct {
 }
 
 type UpstreamError struct {
-	Status    int
-	Code      string
-	Message   string
-	Details   any
-	Retryable bool
+	Status        int
+	Code          string
+	Message       string
+	Details       any
+	Retryable     bool
+	RetryAfter    time.Duration
+	HasRetryAfter bool
 }
 
 func (e *UpstreamError) Error() string {
@@ -112,46 +114,110 @@ func (c *Client) Do(ctx context.Context, in Request) (map[string]any, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	success := resp.StatusCode >= 200 && resp.StatusCode < 300
+	var upstream *UpstreamError
+	if !success {
+		retryAfter, hasRetryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), c.now())
+		upstream = &UpstreamError{
+			Status: resp.StatusCode, Code: "upstream_error", Message: http.StatusText(resp.StatusCode),
+			Retryable:  resp.StatusCode == 429 || resp.StatusCode >= 500,
+			RetryAfter: retryAfter, HasRetryAfter: hasRetryAfter,
+		}
+	}
 	limit := c.MaxResponseBytes
 	if limit <= 0 {
 		limit = 8 << 20
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
+		if upstream != nil {
+			return nil, upstream
+		}
 		return nil, err
 	}
 	if int64(len(raw)) > limit {
+		if upstream != nil {
+			return nil, upstream
+		}
 		return nil, errors.New("upstream response exceeded byte limit")
 	}
-	var decoded map[string]any
-	if len(raw) > 0 {
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		if err := dec.Decode(&decoded); err != nil {
-			return nil, fmt.Errorf("upstream returned invalid JSON: %w", err)
+	decoded, decodeErr := decodeObject(raw)
+	if !success {
+		// Status and headers remain authoritative for non-success responses. Error
+		// bodies are optional upstream diagnostics and may be empty or non-JSON.
+		if decodeErr != nil {
+			return nil, upstream
 		}
-		var extra any
-		if err := dec.Decode(&extra); err != io.EOF {
-			return nil, errors.New("upstream returned more than one JSON value")
-		}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		up := &UpstreamError{Status: resp.StatusCode, Code: "upstream_error", Message: http.StatusText(resp.StatusCode), Retryable: resp.StatusCode == 429 || resp.StatusCode >= 500}
 		if v, ok := decoded["code"].(string); ok && v != "" {
-			up.Code = v
+			upstream.Code = v
 		}
 		if v, ok := decoded["message"].(string); ok && v != "" {
-			up.Message = v
+			upstream.Message = v
 		}
 		if v, ok := decoded["details"]; ok {
-			up.Details = v
+			upstream.Details = v
 		}
-		return nil, up
+		return nil, upstream
+	}
+	if decodeErr != nil {
+		return nil, decodeErr
 	}
 	if decoded == nil {
 		decoded = map[string]any{}
 	}
 	return decoded, nil
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+func decodeObject(raw []byte) (map[string]any, error) {
+	var decoded map[string]any
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("upstream returned invalid JSON: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, errors.New("upstream returned more than one JSON value")
+	}
+	return decoded, nil
+}
+
+func parseRetryAfter(raw string, now time.Time) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			when, err := http.ParseTime(raw)
+			if err != nil {
+				return 0, false
+			}
+			delay := when.Sub(now)
+			if delay < 0 {
+				delay = 0
+			}
+			return delay, true
+		}
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		const maxDurationSeconds = int64(^uint64(0)>>1) / int64(time.Second)
+		if seconds < 0 || seconds > maxDurationSeconds {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	return 0, false
 }
 
 func defaultHTTPClient() *http.Client {

@@ -181,6 +181,12 @@ The private key path may be relative to the credentials file. Both files must be
 
 Production and demo credentials are not interchangeable. The CLI defaults to Kalshi's recommended demo REST base URL. Select production reads with `--environment production`.
 
+## Rate limits and retries
+
+Registry-declared reads automatically retry HTTP `429` responses up to five times per command, including across all pagination pages. The delay uses bounded exponential backoff with equal jitter: nominal caps rise from 250 ms to 4 seconds, and actual fallback waits range from half to all of each cap. A valid `Retry-After` delta or HTTP date is treated as the minimum delay. Retry waits and every pagination page share the command-wide `--timeout` budget. A rate-limited attempt does not increment `pages_fetched` or consume item/page limits.
+
+When a rate limit is encountered, `meta.retry` reports total HTTP attempts, completed retries, exhaustion, the last status, and any final `Retry-After` delay in milliseconds. Other HTTP statuses and transport errors are not automatically retried. If all rate-limit retries are exhausted, the CLI preserves the final `UPSTREAM_REJECTED` envelope with HTTP `429` and `retryable: true`. Writes are always single-attempt, including on `429`; follow their reconciliation guidance instead of blindly retrying.
+
 ## Write workflow
 
 Writes default to `--write-policy deny`. A real order needs a reviewed dry-run digest, an allowed environment policy, and finite count/notional caps.

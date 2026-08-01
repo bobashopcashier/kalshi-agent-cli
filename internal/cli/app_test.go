@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"kalshi-cli/internal/api"
 	"kalshi-cli/internal/auth"
@@ -26,6 +27,14 @@ func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) { return f(
 
 func response(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+type readFailBody struct{ closed bool }
+
+func (b *readFailBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+func (b *readFailBody) Close() error {
+	b.closed = true
+	return nil
 }
 
 func TestDryRunEveryCommandHasZeroCredentialsAndZeroNetwork(t *testing.T) {
@@ -109,6 +118,275 @@ func TestSeriesListUsesExactTagFilterAndCollectionProjection(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), `"title"`) || strings.Contains(stdout.String(), `"pagination"`) {
 		t.Fatalf("unexpected series output=%s", stdout.String())
+	}
+}
+
+func TestReadRetriesRateLimitAndHonorsRetryAfter(t *testing.T) {
+	var calls atomic.Int64
+	var waits []time.Duration
+	doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			resp := response(http.StatusTooManyRequests, "slow down")
+			resp.Header.Set("Retry-After", "2")
+			return resp, nil
+		}
+		return response(http.StatusOK, `{"series":[]}`), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Wait: func(_ context.Context, delay time.Duration) error {
+			waits = append(waits, delay)
+			return nil
+		},
+	})
+	if code := app.Run(context.Background(), []string{"series", "list", "--compact"}); code != contract.ExitOK {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 2 || len(waits) != 1 || waits[0] != 2*time.Second {
+		t.Fatalf("calls=%d waits=%v", calls.Load(), waits)
+	}
+	if !strings.Contains(stdout.String(), `"retry":{"attempts":2,"retries":1,"exhausted":false,"last_http_status":429,"last_retry_after_ms":2000}`) {
+		t.Fatalf("output=%s", stdout.String())
+	}
+}
+
+func TestReadRetriesRateLimitWhenErrorBodyReadFails(t *testing.T) {
+	failedBody := &readFailBody{}
+	var calls atomic.Int64
+	doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: failedBody}, nil
+		}
+		return response(http.StatusOK, `{"series":[]}`), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Wait: func(context.Context, time.Duration) error { return nil },
+	})
+	if code := app.Run(context.Background(), []string{"series", "list", "--compact"}); code != contract.ExitOK {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 2 || !failedBody.closed {
+		t.Fatalf("calls=%d body_closed=%t", calls.Load(), failedBody.closed)
+	}
+}
+
+func TestAuthenticatedReadRetryIsResigned(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls, clock atomic.Int64
+	var timestamps []string
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		timestamps = append(timestamps, req.Header.Get("KALSHI-ACCESS-TIMESTAMP"))
+		if calls.Add(1) == 1 {
+			return response(http.StatusTooManyRequests, `{}`), nil
+		}
+		return response(http.StatusOK, `{"balance":1,"balance_dollars":"0.01","portfolio_value":1,"updated_ts":1}`), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Credentials: func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil },
+		Now: func() time.Time {
+			return time.UnixMilli(1700000000000 + clock.Add(1)*1000)
+		},
+		Wait: func(context.Context, time.Duration) error { return nil },
+	})
+	if code := app.Run(context.Background(), []string{"portfolio", "balance", "--compact"}); code != contract.ExitOK {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 2 || len(timestamps) != 2 || timestamps[0] == "" || timestamps[0] == timestamps[1] {
+		t.Fatalf("calls=%d timestamps=%v", calls.Load(), timestamps)
+	}
+}
+
+func TestRateLimitDelayIsBoundedAndRetryAfterIsFloor(t *testing.T) {
+	for retry := 0; retry < maxRead429Retries; retry++ {
+		base := retryBaseDelay << retry
+		if base > retryMaxDelay {
+			base = retryMaxDelay
+		}
+		delay := rateLimitDelay(retry, &api.UpstreamError{})
+		if delay < base/2 || delay > base {
+			t.Fatalf("retry=%d delay=%s expected_range=[%s,%s]", retry, delay, base/2, base)
+		}
+	}
+	floor := 3 * time.Second
+	if delay := rateLimitDelay(0, &api.UpstreamError{HasRetryAfter: true, RetryAfter: floor}); delay < floor {
+		t.Fatalf("delay=%s floor=%s", delay, floor)
+	}
+}
+
+func TestReadRateLimitRetriesAreBounded(t *testing.T) {
+	var calls, waits atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return response(http.StatusTooManyRequests, `{}`), nil
+		}),
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	if code := app.Run(context.Background(), []string{"series", "list", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != maxRead429Retries+1 || waits.Load() != maxRead429Retries {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if !strings.Contains(stderr.String(), `"http_status":429`) || !strings.Contains(stderr.String(), `"retryable":true`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `"retry":{"attempts":6,"retries":5,"exhausted":true,"last_http_status":429}`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+}
+
+func TestReadDoesNotRetryServerErrors(t *testing.T) {
+	var calls, waits atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return response(http.StatusServiceUnavailable, `{}`), nil
+		}),
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	if code := app.Run(context.Background(), []string{"series", "list", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 1 || waits.Load() != 0 {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if strings.Contains(stderr.String(), `"retry"`) {
+		t.Fatalf("unexpected retry metadata: %s", stderr.String())
+	}
+}
+
+func TestRateLimitRetryStopsBeforeExceedingTimeoutBudget(t *testing.T) {
+	var calls, waits atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			resp := response(http.StatusTooManyRequests, `{}`)
+			resp.Header.Set("Retry-After", "2")
+			return resp, nil
+		}),
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	if code := app.Run(context.Background(), []string{"series", "list", "--timeout", "1s", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 1 || waits.Load() != 0 {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if !strings.Contains(stderr.String(), `"http_status":429`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `"retry":{"attempts":1,"retries":0,"exhausted":true,"last_http_status":429,"last_retry_after_ms":2000}`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+}
+
+func TestRateLimitRetryDoesNotConsumePaginationPage(t *testing.T) {
+	var calls atomic.Int64
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return response(http.StatusTooManyRequests, `{}`), nil
+		case 2:
+			if req.URL.Query().Get("cursor") != "" {
+				t.Fatalf("first page cursor=%q", req.URL.Query().Get("cursor"))
+			}
+			return response(http.StatusOK, `{"markets":[{"ticker":"A"}],"cursor":"next"}`), nil
+		case 3:
+			if req.URL.Query().Get("cursor") != "next" {
+				t.Fatalf("second page cursor=%q", req.URL.Query().Get("cursor"))
+			}
+			return response(http.StatusOK, `{"markets":[{"ticker":"B"}],"cursor":""}`), nil
+		default:
+			t.Fatal("unexpected extra request")
+			return nil, nil
+		}
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Wait: func(context.Context, time.Duration) error { return nil },
+	})
+	if code := app.Run(context.Background(), []string{"markets", "list", "--max-pages", "2", "--max-items", "10", "--compact"}); code != contract.ExitOK {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 3 || !strings.Contains(stdout.String(), `"pages_fetched":2`) || !strings.Contains(stdout.String(), `"items_scanned":2`) {
+		t.Fatalf("calls=%d output=%s", calls.Load(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"retry":{"attempts":3,"retries":1,"exhausted":false,"last_http_status":429}`) {
+		t.Fatalf("output=%s", stdout.String())
+	}
+}
+
+func TestRateLimitRetryBudgetIsCommandWideAcrossPages(t *testing.T) {
+	var calls, waits atomic.Int64
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			if req.URL.Query().Get("cursor") != "" {
+				t.Fatalf("first page cursor=%q", req.URL.Query().Get("cursor"))
+			}
+			return response(http.StatusTooManyRequests, `{}`), nil
+		case 2:
+			return response(http.StatusOK, `{"markets":[{"ticker":"A"}],"cursor":"next"}`), nil
+		default:
+			if req.URL.Query().Get("cursor") != "next" {
+				t.Fatalf("second page cursor=%q", req.URL.Query().Get("cursor"))
+			}
+			return response(http.StatusTooManyRequests, `{}`), nil
+		}
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	if code := app.Run(context.Background(), []string{"markets", "list", "--max-pages", "2", "--max-items", "10", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 7 || waits.Load() != maxRead429Retries {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if !strings.Contains(stderr.String(), `"retry":{"attempts":7,"retries":5,"exhausted":true,"last_http_status":429}`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+}
+
+func TestRateLimitRetryDeadlineDuringNextAttemptIsExhausted(t *testing.T) {
+	var calls, waits atomic.Int64
+	doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			return response(http.StatusTooManyRequests, `{}`), nil
+		}
+		return nil, context.DeadlineExceeded
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	if code := app.Run(context.Background(), []string{"series", "list", "--timeout", "1s", "--compact"}); code != contract.ExitNetwork {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 2 || waits.Load() != 1 {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if !strings.Contains(stderr.String(), `"code":"TIMEOUT"`) || !strings.Contains(stderr.String(), `"retry":{"attempts":2,"retries":1,"exhausted":true,"last_http_status":429}`) {
+		t.Fatalf("stderr=%s", stderr.String())
 	}
 }
 
@@ -232,6 +510,77 @@ func TestAmbiguousWriteIsUnknownAndNeverRetryable(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `"mutation_status":"unknown"`) || !strings.Contains(stderr.String(), `"retryable":false`) || !strings.Contains(stderr.String(), `orders reconcile`) {
 		t.Fatalf("stderr=%s", stderr.String())
+	}
+}
+
+func TestWriteRateLimitIsNeverRetried(t *testing.T) {
+	params := validParams("orders.create")
+	digest := dryRunDigest(t, params)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls, waits atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		Credentials: func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil },
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			resp := response(http.StatusTooManyRequests, `{}`)
+			resp.Header.Set("Retry-After", "0")
+			return resp, nil
+		}),
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	args := []string{"orders", "create", "--params", params, "--write-policy", "demo-only", "--confirm", digest, "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 1 || waits.Load() != 0 {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if !strings.Contains(stderr.String(), `"retryable":false`) || !strings.Contains(stderr.String(), `"mutation_status":"not_attempted"`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), `"retry"`) {
+		t.Fatalf("write exposed retry metadata: %s", stderr.String())
+	}
+}
+
+func TestCancelServerErrorIsNeverRetried(t *testing.T) {
+	params := validParams("orders.cancel")
+	digest := dryRunCancelDigest(t, params)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls, waits atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		Credentials: func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil },
+		HTTP: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			if req.Method != http.MethodDelete {
+				t.Fatalf("method=%s", req.Method)
+			}
+			return response(http.StatusServiceUnavailable, `{}`), nil
+		}),
+		Wait: func(context.Context, time.Duration) error { waits.Add(1); return nil },
+	})
+	args := []string{"orders", "cancel", "--params", params, "--write-policy", "demo-only", "--confirm", digest, "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 1 || waits.Load() != 0 {
+		t.Fatalf("calls=%d waits=%d", calls.Load(), waits.Load())
+	}
+	if !strings.Contains(stderr.String(), `"retryable":false`) || !strings.Contains(stderr.String(), `"mutation_status":"unknown"`) {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), `"retry"`) {
+		t.Fatalf("write exposed retry metadata: %s", stderr.String())
 	}
 }
 
@@ -391,6 +740,33 @@ func TestOutputByteCapFailsAtomically(t *testing.T) {
 		if !strings.Contains(stderr.String(), `"code":"OUTPUT_LIMIT"`) || strings.Contains(stderr.String(), "after-a") {
 			t.Fatalf("unsafe error for %v: %s", format, stderr.String())
 		}
+	}
+}
+
+func TestOutputLimitPreservesRateLimitRetryMetadata(t *testing.T) {
+	var calls atomic.Int64
+	doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			return response(http.StatusTooManyRequests, `{}`), nil
+		}
+		items := []map[string]string{{"ticker": "A", "rules": strings.Repeat("x", 2000)}}
+		raw, _ := json.Marshal(map[string]any{"markets": items, "cursor": ""})
+		return response(http.StatusOK, string(raw)), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer,
+		Wait: func(context.Context, time.Duration) error { return nil },
+	})
+	args := []string{"markets", "list", "--max-items", "1", "--max-bytes", "1024", "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitOutput {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 2 || stdout.Len() != 0 {
+		t.Fatalf("calls=%d stdout=%s", calls.Load(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `"code":"OUTPUT_LIMIT"`) || !strings.Contains(stderr.String(), `"retry":{"attempts":2,"retries":1,"exhausted":false,"last_http_status":429}`) {
+		t.Fatalf("stderr=%s", stderr.String())
 	}
 }
 
@@ -699,6 +1075,16 @@ func dryRunDigest(t *testing.T, params string) string {
 	var stdout, stderr bytes.Buffer
 	app := New(Config{Stdout: &stdout, Stderr: &stderr})
 	if code := app.Run(context.Background(), []string{"orders", "create", "--params", params, "--write-policy", "demo-only", "--dry-run", "--compact"}); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	return extractDigest(t, stdout.Bytes())
+}
+
+func dryRunCancelDigest(t *testing.T, params string) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr})
+	if code := app.Run(context.Background(), []string{"orders", "cancel", "--params", params, "--write-policy", "demo-only", "--dry-run", "--compact"}); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	return extractDigest(t, stdout.Bytes())
