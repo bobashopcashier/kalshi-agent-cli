@@ -65,6 +65,8 @@ func validParams(name string) string {
 		return `{"ticker":"TEST-1"}`
 	case "events.get":
 		return `{"event_ticker":"EVENT-1"}`
+	case "series.get":
+		return `{"series_ticker":"SERIES-1"}`
 	case "orders.get":
 		return `{"order_id":"order-1"}`
 	case "orders.reconcile":
@@ -75,6 +77,56 @@ func validParams(name string) string {
 		return `{"order_id":"order-1"}`
 	default:
 		return ""
+	}
+}
+
+func TestSeriesListUsesExactTagFilterAndCollectionProjection(t *testing.T) {
+	var calls atomic.Int64
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if req.Method != "GET" || req.URL.Scheme != "https" || req.URL.Host != "external-api.kalshi.com" || req.URL.Path != "/trade-api/v2/series" {
+			t.Fatalf("request=%s %s", req.Method, req.URL)
+		}
+		if req.Header.Get("KALSHI-ACCESS-KEY") != "" || req.Header.Get("KALSHI-ACCESS-SIGNATURE") != "" {
+			t.Fatalf("public series request was unexpectedly authenticated")
+		}
+		if req.URL.Query().Get("tags") != "Fed" || req.URL.Query().Get("include_volume") != "true" {
+			t.Fatalf("query=%s", req.URL.RawQuery)
+		}
+		if req.URL.Query().Has("cursor") || req.URL.Query().Has("limit") {
+			t.Fatalf("series list is not cursor-paginated: %s", req.URL.RawQuery)
+		}
+		return response(200, `{"series":[{"ticker":"KXFED","tags":["Fed"],"volume_fp":"10.00","title":"Fed decisions"}]}`), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer})
+	args := []string{"series", "list", "--environment", "production", "--params", `{"tags":"Fed","include_volume":true}`, "--fields", "ticker,tags,volume_fp", "--compact"}
+	if code := app.Run(context.Background(), args); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 1 || !strings.Contains(stdout.String(), `"ticker":"KXFED"`) || !strings.Contains(stdout.String(), `"tags":["Fed"]`) || !strings.Contains(stdout.String(), `"volume_fp":"10.00"`) {
+		t.Fatalf("output=%s calls=%d", stdout.String(), calls.Load())
+	}
+	if strings.Contains(stdout.String(), `"title"`) || strings.Contains(stdout.String(), `"pagination"`) {
+		t.Fatalf("unexpected series output=%s", stdout.String())
+	}
+}
+
+func TestSeriesGetBuildsPathAndProjectsWrapper(t *testing.T) {
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/trade-api/v2/series/KXFED" || req.URL.Query().Get("include_volume") != "true" {
+			t.Fatalf("url=%s", req.URL)
+		}
+		return response(200, `{"series":{"ticker":"KXFED","tags":["Fed"],"volume_fp":"10.00","title":"omit"}}`), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: doer})
+	args := []string{"series", "get", "--params", `{"series_ticker":"KXFED","include_volume":true}`, "--fields", "series.ticker,series.tags,series.volume_fp", "--compact"}
+	if code := app.Run(context.Background(), args); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"series":{"tags":["Fed"],"ticker":"KXFED","volume_fp":"10.00"}`) || strings.Contains(stdout.String(), `"title"`) {
+		t.Fatalf("output=%s", stdout.String())
 	}
 }
 

@@ -78,6 +78,22 @@ func TestCancelAutoRouteRequiresTicker(t *testing.T) {
 	}
 }
 
+func TestSeriesListAcceptsExactTagsAndRejectsIgnoredPagination(t *testing.T) {
+	cmd := command(t, "series.list")
+	params, err := normalizeParams(cmd, `{"tags":"Fed,Interest Rates","include_volume":true,"min_updated_ts":0}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params["tags"] != "Fed,Interest Rates" || params["include_volume"] != true {
+		t.Fatalf("params=%#v", params)
+	}
+	for _, raw := range []string{`{"limit":1}`, `{"cursor":"ignored"}`} {
+		if _, err := normalizeParams(cmd, raw, nil); err == nil || !strings.Contains(err.Error(), "unknown property") {
+			t.Errorf("raw=%s error=%v", raw, err)
+		}
+	}
+}
+
 func TestInvalidUTF8Rejected(t *testing.T) {
 	cmd := command(t, "markets.list")
 	raw := string([]byte{'{', '"', 'c', 'u', 'r', 's', 'o', 'r', '"', ':', '"', 0xff, '"', '}'})

@@ -23,6 +23,12 @@ var eventProjectableFields = append([]string{
 	"fee_multiplier_override", "exchange_index",
 }, prefixedFields("markets", marketProjectableFields)...)
 
+var seriesProjectableFields = []string{
+	"ticker", "frequency", "title", "category", "tags", "settlement_sources", "settlement_sources.name",
+	"settlement_sources.url", "contract_url", "contract_terms_url", "fee_type", "fee_multiplier",
+	"additional_prohibitions", "product_metadata", "volume_fp", "last_updated_ts", "exchange_index",
+}
+
 var tradeProjectableFields = []string{
 	"trade_id", "ticker", "count_fp", "yes_price_dollars", "no_price_dollars", "taker_side",
 	"taker_outcome_side", "taker_book_side", "created_time", "is_block_trade",

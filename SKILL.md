@@ -1,6 +1,6 @@
 ---
 name: kalshi-cli
-description: Use the local kalshi CLI for bounded Kalshi market research, portfolio reads, order reconciliation, and explicitly confirmed demo or production order operations.
+description: Use the local kalshi CLI for bounded Kalshi series and market research, portfolio reads, order reconciliation, and explicitly confirmed demo or production order operations.
 ---
 
 # Kalshi CLI
@@ -12,7 +12,7 @@ Use the compiled `kalshi` binary or `go run ./cmd/kalshi` from this repository.
 1. If the command is not already known from the same cached registry/binary version, run `kalshi commands list --fields registry_version,commands.name,commands.summary --compact` once and cache the result by `registry_version` for the task.
 2. Before constructing unfamiliar parameters, run `kalshi commands describe <command.name> --fields command.name,command.summary,command.effect,command.params_schema --compact`. Add `command.response_schema,command.docs_url` only when response semantics or upstream documentation are needed.
 3. Prefer one strict `--params` JSON object for generated calls. Convenience flags are safe but must not duplicate fields in `--params`.
-4. Add the narrowest useful `--fields` selection to reads. Paths are item-relative for paginated collections and data-root-relative otherwise. Discover allowed paths offline with `kalshi commands describe <command.name> --fields command.response_schema.x-projectable-fields --compact`.
+4. Add the narrowest useful `--fields` selection to reads. Paths are item-relative for collection commands and data-root-relative otherwise. Discover allowed paths offline with `kalshi commands describe <command.name> --fields command.response_schema.x-projectable-fields --compact`.
 5. Set explicit `--max-pages`, `--max-items`, and `--max-bytes` when the defaults do not fit the task. Never emulate an unbounded `--all` loop.
 6. Parse `schema_version`, `ok`, stable `error.code`, `effect`, and `meta.truncation`. Do not scrape prose.
 7. Treat a non-empty `meta.pagination.next_cursor` plus truncation reasons as an explicit continuation decision.
