@@ -1,9 +1,9 @@
 ---
-name: kalshi-agent-cli
+name: kalshi-cli
 description: Use the local kalshi CLI for bounded Kalshi market research, portfolio reads, order reconciliation, and explicitly confirmed demo or production order operations.
 ---
 
-# Kalshi agent CLI
+# Kalshi CLI
 
 Use the compiled `kalshi` binary or `go run ./cmd/kalshi` from this repository.
 

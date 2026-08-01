@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"kalshi-agent-cli/internal/cli"
+	"kalshi-cli/internal/cli"
 )
 
 var version = "dev"

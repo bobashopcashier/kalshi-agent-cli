@@ -1,3 +1,3 @@
-module kalshi-agent-cli
+module kalshi-cli
 
 go 1.26

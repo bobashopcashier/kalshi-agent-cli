@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"kalshi-agent-cli/internal/registry"
+	"kalshi-cli/internal/registry"
 )
 
 func command(t *testing.T, name string) registry.Command {
