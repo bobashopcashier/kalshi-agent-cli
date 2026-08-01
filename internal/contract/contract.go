@@ -26,11 +26,20 @@ type Truncation struct {
 	Reasons   []string `json:"reasons"`
 }
 
+type Retry struct {
+	Attempts         int    `json:"attempts"`
+	Retries          int    `json:"retries"`
+	Exhausted        bool   `json:"exhausted"`
+	LastHTTPStatus   int    `json:"last_http_status,omitempty"`
+	LastRetryAfterMS *int64 `json:"last_retry_after_ms,omitempty"`
+}
+
 type Meta struct {
 	RequestID      string      `json:"request_id"`
 	Environment    string      `json:"environment"`
 	SanitizedCount int         `json:"sanitized_count"`
 	Pagination     *Pagination `json:"pagination,omitempty"`
+	Retry          *Retry      `json:"retry,omitempty"`
 	Truncation     Truncation  `json:"truncation"`
 	Sequence       *int        `json:"sequence,omitempty"`
 }

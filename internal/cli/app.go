@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -23,6 +24,9 @@ const (
 	demoBaseURL       = "https://external-api.demo.kalshi.co/trade-api/v2"
 	productionBaseURL = "https://external-api.kalshi.com/trade-api/v2"
 	maxCursorBytes    = 64 << 10
+	maxRead429Retries = 5
+	retryBaseDelay    = 250 * time.Millisecond
+	retryMaxDelay     = 4 * time.Second
 )
 
 type Config struct {
@@ -35,6 +39,7 @@ type Config struct {
 	BaseURL     string
 	Env         func(string) string
 	Now         func() time.Time
+	Wait        func(context.Context, time.Duration) error
 	Credentials func() (auth.Credentials, error)
 }
 
@@ -60,6 +65,7 @@ type cliError struct {
 	Retryable      bool
 	HTTPStatus     int
 	Details        any
+	Retry          *contract.Retry
 	Attempted      bool
 	MutationStatus string
 }
@@ -71,7 +77,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		opts := defaultOptions(a.cfg.IsTTY)
 		env := a.successEnvelope("version", registry.Effect{Class: "local"}, opts, map[string]any{"version": a.cfg.Version}, "not_applicable")
 		if err := render(a.cfg.Stdout, &env, opts, ""); err != nil {
-			return a.emitRenderFailure("version", opts, registry.Effect{Class: "local"}, false, "not_applicable", err)
+			return a.emitRenderFailure("version", opts, registry.Effect{Class: "local"}, false, "not_applicable", err, nil)
 		}
 		return contract.ExitOK
 	}
@@ -99,7 +105,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		localEffect := registry.Effect{Class: "local"}
 		env := a.successEnvelope(cmd.Name, localEffect, opts, cmd, "not_applicable")
 		if err := render(a.cfg.Stdout, &env, opts, ""); err != nil {
-			return a.emitRenderFailure(cmd.Name, opts, localEffect, false, "not_applicable", err)
+			return a.emitRenderFailure(cmd.Name, opts, localEffect, false, "not_applicable", err, nil)
 		}
 		return contract.ExitOK
 	}
@@ -124,7 +130,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		status := mutationStatus(cmd, false, false)
 		env := a.successEnvelope(cmd.Name, cmd.Effect, opts, data, status)
 		if err := render(a.cfg.Stdout, &env, opts, ""); err != nil {
-			return a.emitRenderFailure(cmd.Name, opts, cmd.Effect, false, status, err)
+			return a.emitRenderFailure(cmd.Name, opts, cmd.Effect, false, status, err, nil)
 		}
 		return contract.ExitOK
 	}
@@ -140,22 +146,23 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitPolicy, Code: "CONFIRMATION_MISMATCH", Message: "run the identical command with --dry-run, review it, then pass its exact confirmation_digest via --confirm", MutationStatus: "not_attempted"})
 		}
 	}
-	data, page, truncation, runErr := a.execute(ctx, cmd, params, opts)
+	data, page, retry, truncation, runErr := a.execute(ctx, cmd, params, opts)
 	if runErr != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, runErr)
 	}
 	if len(opts.Fields) > 0 {
 		data, err = projectResponseData(data, opts.Fields, cmd.ResponseSchema.CollectionField, cmd.ResponseSchema.CursorField)
 		if err != nil {
-			return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), Attempted: true, MutationStatus: "not_applicable"})
+			return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), Retry: retry, Attempted: true, MutationStatus: "not_applicable"})
 		}
 	}
 	status := mutationStatus(cmd, true, true)
 	env := a.successEnvelope(cmd.Name, cmd.Effect, opts, data, status)
 	env.Meta.Pagination = page
+	env.Meta.Retry = retry
 	env.Meta.Truncation = truncation
 	if err := render(a.cfg.Stdout, &env, opts, cmd.ResponseSchema.CollectionField); err != nil {
-		return a.emitRenderFailure(cmd.Name, opts, cmd.Effect, true, status, err)
+		return a.emitRenderFailure(cmd.Name, opts, cmd.Effect, true, status, err, retry)
 	}
 	return contract.ExitOK
 }
@@ -169,7 +176,7 @@ func (a *App) runHelp(args []string) int {
 	}
 	env := a.successEnvelope("help", registry.Effect{Class: "local"}, opts, data, "not_applicable")
 	if err := render(a.cfg.Stdout, &env, opts, ""); err != nil {
-		return a.emitRenderFailure("help", opts, registry.Effect{Class: "local"}, false, "not_applicable", err)
+		return a.emitRenderFailure("help", opts, registry.Effect{Class: "local"}, false, "not_applicable", err, nil)
 	}
 	return contract.ExitOK
 }
@@ -195,7 +202,7 @@ func (a *App) runCommands(args []string) int {
 		}
 		env := a.successEnvelope(name, registry.Effect{Class: "local"}, opts, data, "not_applicable")
 		if err := render(a.cfg.Stdout, &env, opts, ""); err != nil {
-			return a.emitRenderFailure(name, opts, registry.Effect{Class: "local"}, false, "not_applicable", err)
+			return a.emitRenderFailure(name, opts, registry.Effect{Class: "local"}, false, "not_applicable", err, nil)
 		}
 		return contract.ExitOK
 	case "describe":
@@ -223,7 +230,7 @@ func (a *App) runCommands(args []string) int {
 		}
 		env := a.successEnvelope(name, registry.Effect{Class: "local"}, opts, data, "not_applicable")
 		if err := render(a.cfg.Stdout, &env, opts, ""); err != nil {
-			return a.emitRenderFailure(name, opts, registry.Effect{Class: "local"}, false, "not_applicable", err)
+			return a.emitRenderFailure(name, opts, registry.Effect{Class: "local"}, false, "not_applicable", err, nil)
 		}
 		return contract.ExitOK
 	default:
@@ -231,7 +238,7 @@ func (a *App) runCommands(args []string) int {
 	}
 }
 
-func (a *App) execute(ctx context.Context, cmd registry.Command, params map[string]any, opts options) (map[string]any, *contract.Pagination, contract.Truncation, *cliError) {
+func (a *App) execute(ctx context.Context, cmd registry.Command, params map[string]any, opts options) (map[string]any, *contract.Pagination, *contract.Retry, contract.Truncation, *cliError) {
 	baseURL := a.cfg.BaseURL
 	if baseURL == "" {
 		if opts.Environment == "production" {
@@ -252,21 +259,24 @@ func (a *App) execute(ctx context.Context, cmd registry.Command, params map[stri
 	if !cmd.Paginated {
 		req, err := buildRequest(cmd, params, "", 0)
 		if err != nil {
-			return nil, nil, contract.Truncation{}, internalError(err)
+			return nil, nil, nil, contract.Truncation{}, internalError(err)
 		}
 		if cmd.Effect.AuthOptional {
 			req.Auth = opts.Authenticated
 		}
-		data, err := client.Do(execCtx, req)
+		retry := &contract.Retry{}
+		data, err := doWithRateLimitRetry(execCtx, client, cmd, req, a.cfg.Wait, retry)
 		if err != nil {
-			return nil, nil, contract.Truncation{}, classifyExecutionError(cmd, err)
+			problem := classifyExecutionError(cmd, err)
+			problem.Retry = visibleRetry(retry)
+			return nil, nil, nil, contract.Truncation{}, problem
 		}
-		return data, nil, contract.Truncation{Reasons: []string{}}, nil
+		return data, nil, visibleRetry(retry), contract.Truncation{Reasons: []string{}}, nil
 	}
-	return executePages(execCtx, client, cmd, params, opts)
+	return executePages(execCtx, client, cmd, params, opts, a.cfg.Wait)
 }
 
-func executePages(ctx context.Context, client *api.Client, cmd registry.Command, params map[string]any, opts options) (map[string]any, *contract.Pagination, contract.Truncation, *cliError) {
+func executePages(ctx context.Context, client *api.Client, cmd registry.Command, params map[string]any, opts options, wait func(context.Context, time.Duration) error) (map[string]any, *contract.Pagination, *contract.Retry, contract.Truncation, *cliError) {
 	collection, cursorField := cmd.ResponseSchema.CollectionField, cmd.ResponseSchema.CursorField
 	result := map[string]any{}
 	items := []any{}
@@ -276,6 +286,7 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 		seen[cursor] = true
 	}
 	pages, scanned := 0, 0
+	retry := &contract.Retry{}
 	truncation := contract.Truncation{Reasons: []string{}}
 	for pages < opts.MaxPages && scanned < opts.MaxItems {
 		remaining := opts.MaxItems - scanned
@@ -285,11 +296,15 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 		}
 		req, err := buildRequest(cmd, params, cursor, pageLimit)
 		if err != nil {
-			return nil, nil, truncation, internalError(err)
+			problem := internalError(err)
+			problem.Retry = visibleRetry(retry)
+			return nil, nil, nil, truncation, problem
 		}
-		page, err := client.Do(ctx, req)
+		page, err := doWithRateLimitRetry(ctx, client, cmd, req, wait, retry)
 		if err != nil {
-			return nil, nil, truncation, classifyExecutionError(cmd, err)
+			problem := classifyExecutionError(cmd, err)
+			problem.Retry = visibleRetry(retry)
+			return nil, nil, nil, truncation, problem
 		}
 		pages++
 		if pages == 1 {
@@ -301,10 +316,10 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 		}
 		pageItems, ok := page[collection].([]any)
 		if !ok {
-			return nil, nil, truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: "upstream collection field is missing or not an array", Attempted: true, MutationStatus: "not_applicable"}
+			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: "upstream collection field is missing or not an array", Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
 		}
 		if len(pageItems) > pageLimit {
-			return nil, nil, truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: "upstream returned more collection items than the requested page limit", Attempted: true, MutationStatus: "not_applicable"}
+			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: "upstream returned more collection items than the requested page limit", Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
 		}
 		scanned += len(pageItems)
 		if cmd.LocalFilter != "" {
@@ -320,14 +335,14 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 		}
 		next, err := validatedPageCursor(page, cursorField)
 		if err != nil {
-			return nil, nil, truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: err.Error(), Attempted: true, MutationStatus: "not_applicable"}
+			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: err.Error(), Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
 		}
 		cursor = next
 		if cursor == "" {
 			break
 		}
 		if seen[cursor] {
-			return nil, nil, truncation, &cliError{Exit: contract.ExitUpstream, Code: "CURSOR_CYCLE", Message: "upstream repeated a pagination cursor", Attempted: true, MutationStatus: "not_applicable"}
+			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "CURSOR_CYCLE", Message: "upstream repeated a pagination cursor", Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
 		}
 		seen[cursor] = true
 	}
@@ -342,7 +357,88 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 	result[collection] = items
 	result[cursorField] = cursor
 	pageMeta := &contract.Pagination{PagesFetched: pages, ItemsScanned: scanned, ItemsReturned: len(items), NextCursor: cursor}
-	return result, pageMeta, truncation, nil
+	return result, pageMeta, visibleRetry(retry), truncation, nil
+}
+
+func doWithRateLimitRetry(ctx context.Context, client *api.Client, cmd registry.Command, req api.Request, wait func(context.Context, time.Duration) error, retry *contract.Retry) (map[string]any, error) {
+	retrySafe := !cmd.Effect.Mutation && (req.Method == http.MethodGet || req.Method == http.MethodHead)
+	for {
+		retry.Attempts++
+		data, err := client.Do(ctx, req)
+		if err == nil || !retrySafe {
+			return data, err
+		}
+		var upstream *api.UpstreamError
+		if !errors.As(err, &upstream) || upstream.Status != http.StatusTooManyRequests {
+			if retry.LastHTTPStatus == http.StatusTooManyRequests && (ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded)) {
+				retry.Exhausted = true
+			}
+			return nil, err
+		}
+		retry.LastHTTPStatus = upstream.Status
+		retry.LastRetryAfterMS = nil
+		if upstream.HasRetryAfter {
+			delayMS := upstream.RetryAfter.Milliseconds()
+			retry.LastRetryAfterMS = &delayMS
+		}
+		if retry.Retries >= maxRead429Retries {
+			retry.Exhausted = true
+			return nil, err
+		}
+		if ctx.Err() != nil {
+			retry.Exhausted = true
+			return nil, ctx.Err()
+		}
+		delay := rateLimitDelay(retry.Retries, upstream)
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= delay {
+			retry.Exhausted = true
+			return nil, err
+		}
+		if wait == nil {
+			wait = waitForRetry
+		}
+		if err := wait(ctx, delay); err != nil {
+			retry.Exhausted = true
+			return nil, err
+		}
+		retry.Retries++
+	}
+}
+
+func visibleRetry(retry *contract.Retry) *contract.Retry {
+	if retry == nil || (retry.Retries == 0 && !retry.Exhausted && retry.LastHTTPStatus == 0) {
+		return nil
+	}
+	return retry
+}
+
+func rateLimitDelay(retry int, upstream *api.UpstreamError) time.Duration {
+	delay := retryBaseDelay
+	for i := 0; i < retry && delay < retryMaxDelay; i++ {
+		delay *= 2
+		if delay > retryMaxDelay {
+			delay = retryMaxDelay
+		}
+	}
+	// Equal jitter keeps a meaningful backoff floor while preventing concurrent
+	// CLI processes from retrying in lockstep.
+	half := delay / 2
+	delay = half + time.Duration(mathrand.Int64N(int64(delay-half)+1))
+	if upstream.HasRetryAfter && upstream.RetryAfter > delay {
+		delay = upstream.RetryAfter
+	}
+	return delay
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func classifyExecutionError(cmd registry.Command, err error) *cliError {
@@ -406,15 +502,15 @@ func (a *App) emitError(command string, opts options, effect registry.Effect, pr
 	if status == "" {
 		status = mutationStatus(registry.Command{Effect: effect}, problem.Attempted, false)
 	}
-	env := contract.Envelope{SchemaVersion: contract.SchemaVersion, OK: false, Command: command, Effect: contractEffect(effect, opts.DryRun, problem.Attempted, status), Error: &contract.APIError{Code: problem.Code, Message: message, Retryable: problem.Retryable, HTTPStatus: problem.HTTPStatus, Details: problem.Details}, Meta: contract.Meta{RequestID: requestID(), Environment: opts.Environment, Truncation: contract.Truncation{Reasons: []string{}}}}
+	env := contract.Envelope{SchemaVersion: contract.SchemaVersion, OK: false, Command: command, Effect: contractEffect(effect, opts.DryRun, problem.Attempted, status), Error: &contract.APIError{Code: problem.Code, Message: message, Retryable: problem.Retryable, HTTPStatus: problem.HTTPStatus, Details: problem.Details}, Meta: contract.Meta{RequestID: requestID(), Environment: opts.Environment, Retry: problem.Retry, Truncation: contract.Truncation{Reasons: []string{}}}}
 	if err := render(a.cfg.Stderr, &env, opts, ""); err != nil {
 		return contract.ExitOutput
 	}
 	return problem.Exit
 }
 
-func (a *App) emitRenderFailure(command string, opts options, effect registry.Effect, attempted bool, status string, err error) int {
-	return a.emitError(command, opts, effect, &cliError{Exit: contract.ExitOutput, Code: "OUTPUT_LIMIT", Message: err.Error(), Attempted: attempted, MutationStatus: status})
+func (a *App) emitRenderFailure(command string, opts options, effect registry.Effect, attempted bool, status string, err error, retry *contract.Retry) int {
+	return a.emitError(command, opts, effect, &cliError{Exit: contract.ExitOutput, Code: "OUTPUT_LIMIT", Message: err.Error(), Retry: retry, Attempted: attempted, MutationStatus: status})
 }
 
 func validatedPageCursor(page map[string]any, cursorField string) (string, error) {

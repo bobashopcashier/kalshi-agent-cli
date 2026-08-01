@@ -43,3 +43,5 @@ Prefer compact JSON for model consumption. Use NDJSON only for external line-ori
 Projection happens before sanitization and byte accounting. If the result still exceeds `--max-bytes`, the command fails atomically with `OUTPUT_LIMIT`; add or narrow fields, or increase the cap. Never treat an output-limit error as a partial page or continue from a cursor copied from error text.
 
 Branch on stable error codes and exit categories documented in `README.md`. A network error is retryable only for reads. Writes are never automatically retried.
+
+Read commands automatically handle bounded HTTP `429` retries within `--timeout`. Inspect `meta.retry` when present for attempts, completed retries, exhaustion, and the final server delay. A final `UPSTREAM_REJECTED` with HTTP `429` and `retryable: true` means the per-process retry budget was exhausted; back off before starting another CLI process. Rate-limited attempts do not count as fetched pagination pages.
