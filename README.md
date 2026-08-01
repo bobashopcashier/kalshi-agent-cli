@@ -2,6 +2,8 @@
 
 `kalshi` is a JSON-first, agent-native Go CLI for Kalshi's Predictions Trade API. It exposes a small, current V2 surface through one authoritative offline registry, strict schemas, bounded execution, and explicit mutation gates.
 
+Historical projection benchmark from `v0.1.0` on 2026-07-31 (before per-command output-contract metadata was added):
+
 | Path | Output bytes | Output tokens | Command + output tokens | Median time |
 |---|---:|---:|---:|---:|
 | Raw `curl` | 6,916 | 2,193 | 2,255 | 223.2 ms |
@@ -63,16 +65,16 @@ make check
 
 ```sh
 ./bin/kalshi commands list \
-  --fields registry_version,commands.name,commands.summary \
+  --fields registry_version,commands.name,commands.output_contract_version,commands.summary \
   --compact
 
 ./bin/kalshi commands describe orders.create \
-  --fields command.name,command.summary,command.effect,command.params_schema \
+  --fields command.name,command.output_contract_version,command.summary,command.effect,command.params_schema \
   --compact
 ```
 
 These commands make no network requests. Their schemas are the same compiled registry used for argument parsing, planning, effect metadata, and request construction.
-Add `command.response_schema,command.docs_url` only when response semantics or upstream documentation are needed. To discover valid projection paths without returning the whole schema, select `command.response_schema.x-projectable-fields`.
+Add `command.response_schema,command.docs_url` only when response semantics or upstream documentation are needed. To discover valid and required projection paths without returning the whole schema, select `command.response_schema.x-projectable-fields,command.response_schema.x-required-fields,command.response_schema.x-required-field-types`.
 
 ## Strict parameters and convenience flags
 
@@ -105,7 +107,11 @@ Unknown keys, duplicate JSON keys, wrong types, trailing JSON, control/bidi char
 
 ## Output contract
 
-Every result uses `schema_version: "kalshi.agent/v1"`. JSON is compact by default when stdout is not a TTY and pretty on a TTY. Override with `--compact`, `--pretty`, or `--ndjson`.
+Every result uses the stable envelope `schema_version: "kalshi.agent/v1"` and names the command data contract in `output_contract_version`, for example `kalshi.output/markets.list/v1`. The same output-contract version appears on success and error envelopes. JSON is compact by default when stdout is not a TTY and pretty on a TTY. Override with `--compact`, `--pretty`, or `--ndjson`.
+
+The offline response schema declares unconditional data paths in `x-required-fields` and their types in `x-required-field-types`. After a successful HTTP response and before projection, the CLI checks every required wrapper and field. A missing field fails atomically with exit 6, stable code `UPSTREAM_SCHEMA_MISMATCH`, and structured details that include the contract version and sorted field paths such as `missing_fields: ["markets[].ticker"]`. Null or wrong-type required values and declared top-level type changes are reported through `type_mismatches`. Additional upstream fields remain allowed.
+
+Adding an optional field does not change an output-contract version. Removing or renaming a field, changing its type or requiredness, or changing a wrapper/collection shape requires a version bump for only the affected command.
 
 Use `--fields` to keep model context focused:
 
@@ -120,7 +126,7 @@ Use `--fields` to keep model context focused:
 
 Fields are comma-separated, case-sensitive dotted member paths. For collection commands they are relative to each item; cursor-paginated commands also retain the upstream cursor and pagination metadata. For singleton reads and discovery they are relative to `data`, so a single market uses `--fields market.ticker,market.title`. Dotted traversal applies elementwise through arrays: `price_ranges.start` means `price_ranges[*].start`. Projection is local and is never sent to Kalshi.
 
-Network-command selectors are checked before execution against the offline registry's `x-projectable-fields`; typos fail without a request. Valid optional fields that are absent from a particular response are simply omitted. The path grammar supports identifier-like JSON keys, hyphens, and `$schema`; keys containing literal dots are not projectable.
+Network-command selectors are checked before execution against the offline registry's `x-projectable-fields`; typos fail without a request. Valid optional fields that are absent from a particular response are materialized as `null`, so every non-empty projected item has the requested shape. Empty collections remain valid. The path grammar supports identifier-like JSON keys, hyphens, and `$schema`; keys containing literal dots are not projectable.
 
 `--fields` is available for successful reads and discovery. It is rejected for mutations, dry-runs, and command help so it cannot hide a write result, plan, digest, or contract.
 
@@ -128,11 +134,11 @@ Cursor-paginated list commands default to one page, 100 items, and a 1 MiB final
 
 The final result must fit `--max-bytes` atomically. If it does not, the CLI returns `OUTPUT_LIMIT` and no partial success or post-page cursor. Add or narrow fields, or raise the cap. This fail-closed behavior is a safety correction from the earlier successful render-time truncation contract: an opaque upstream cursor cannot safely resume midway through omitted records.
 
-Prefer compact JSON for model consumption. For network list commands, NDJSON is an atomically buffered, line-oriented interchange format; it emits one versioned `record_type: "item"` envelope per item and a final `record_type: "summary"` envelope, so its repeated metadata usually costs more tokens. Local discovery emits one `record_type: "result"` record.
+Prefer compact JSON for model consumption. For network list commands, NDJSON is an atomically buffered, line-oriented interchange format; it emits one versioned `record_type: "item"` envelope per item and a final `record_type: "summary"` envelope, with the same `output_contract_version` on every record, so its repeated metadata usually costs more tokens. Local discovery and errors emit one `record_type: "result"` record.
 
 ### Agent-context benchmark: raw `curl` versus `--fields`
 
-A live production benchmark on 2026-07-31 fetched the same four open `KXFED` markets. Raw `curl` returned every market field; the CLI retained only `ticker`, `title`, and `close_time` while preserving its versioned safety and pagination envelope.
+A live production benchmark on 2026-07-31 using `v0.1.0` fetched the same four open `KXFED` markets. Raw `curl` returned every market field; the CLI retained only `ticker`, `title`, and `close_time`. Treat the measurements as a historical projection baseline: current envelopes also carry `output_contract_version`, so rerun the benchmark before citing current byte or token counts.
 
 
 

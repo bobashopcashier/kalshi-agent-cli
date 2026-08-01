@@ -7,10 +7,16 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 	if len(all) != 15 {
 		t.Fatalf("got %d commands, want 15", len(all))
 	}
+	if len(outputContractRevisions) != len(all) {
+		t.Fatalf("got %d output contract revisions for %d commands", len(outputContractRevisions), len(all))
+	}
 	names, paths := map[string]bool{}, map[string]bool{}
 	for _, cmd := range all {
 		if cmd.SchemaVersion != "kalshi.command/v1" {
 			t.Errorf("%s schema version=%q", cmd.Name, cmd.SchemaVersion)
+		}
+		if want := "kalshi.output/" + cmd.Name + "/v1"; cmd.OutputContractVersion != want {
+			t.Errorf("%s output contract version=%q, want %q", cmd.Name, cmd.OutputContractVersion, want)
 		}
 		if names[cmd.Name] {
 			t.Fatalf("duplicate name %s", cmd.Name)
@@ -43,6 +49,20 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 				if i > 0 && cmd.ResponseSchema.ProjectableFields[i-1] > field {
 					t.Errorf("%s projectable fields are not sorted", cmd.Name)
 				}
+			}
+			for i, field := range cmd.ResponseSchema.RequiredFields {
+				if !seenFields[field] {
+					t.Errorf("%s requires non-projectable response field %s", cmd.Name, field)
+				}
+				if i > 0 && cmd.ResponseSchema.RequiredFields[i-1] >= field {
+					t.Errorf("%s required response fields are not sorted and unique", cmd.Name)
+				}
+				if cmd.ResponseSchema.RequiredFieldTypes[field] == "" {
+					t.Errorf("%s required response field %s has no type", cmd.Name, field)
+				}
+			}
+			if len(cmd.ResponseSchema.RequiredFieldTypes) != len(cmd.ResponseSchema.RequiredFields) {
+				t.Errorf("%s required response field types do not match required fields", cmd.Name)
 			}
 		}
 		for _, required := range cmd.ParamsSchema.Required {

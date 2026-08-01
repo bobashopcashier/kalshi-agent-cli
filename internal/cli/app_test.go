@@ -488,6 +488,35 @@ func TestCreateDryRunDigestThenConfirmedSignedMutation(t *testing.T) {
 	}
 }
 
+func TestMalformedSuccessfulMutationResponseIsUnknown(t *testing.T) {
+	params := validParams("orders.create")
+	digest := dryRunDigest(t, params)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		Credentials: func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil },
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(201, `{"order_id":"order-1","fill_count":"0.00","ts_ms":1}`), nil
+		}),
+	})
+	args := []string{"orders", "create", "--params", params, "--write-policy", "demo-only", "--confirm", digest, "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{`"code":"UPSTREAM_SCHEMA_MISMATCH"`, `"mutation_status":"unknown"`, `"missing_fields":["remaining_count"]`, `"outcome":"unknown"`, `orders reconcile`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("missing %s in %s", want, stderr.String())
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("partial mutation result leaked: %s", stdout.String())
+	}
+}
+
 func TestAmbiguousWriteIsUnknownAndNeverRetryable(t *testing.T) {
 	params := validParams("orders.create")
 	digest := dryRunDigest(t, params)
@@ -672,6 +701,79 @@ func TestReconcileScansBoundedPagesAndExactMatchesLocally(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"items_scanned":3`) || !strings.Contains(stdout.String(), `"items_returned":1`) {
 		t.Fatalf("output=%s", stdout.String())
+	}
+}
+
+func TestReconcileFailsIfLocalFilterFieldDisappears(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		Credentials: func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil },
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"orders":[{"order_id":"order-1"}],"cursor":""}`), nil
+		}),
+	})
+	args := []string{"orders", "reconcile", "--client-order-id", "client-1", "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"missing_fields":["orders[].client_order_id"]`) {
+		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestSchemaDriftPreservesSafePaginationAndRetryMetadata(t *testing.T) {
+	var calls atomic.Int64
+	appDoer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return response(200, `{"markets":[{"ticker":"A"}],"cursor":"next"}`), nil
+		case 2:
+			return response(http.StatusTooManyRequests, `{}`), nil
+		default:
+			return response(200, `{"markets":[{"title":"missing identity"}],"cursor":"unsafe-next"}`), nil
+		}
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: appDoer,
+		Wait: func(context.Context, time.Duration) error { return nil },
+	})
+	if code := app.Run(context.Background(), []string{"markets", "list", "--max-pages", "2", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{`"retry":{"attempts":3,"retries":1`, `"pagination":{"pages_fetched":2,"items_scanned":1,"items_returned":1}`, `"missing_fields":["markets[].ticker"]`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("missing %s in %s", want, stderr.String())
+		}
+	}
+	if stdout.Len() != 0 || strings.Contains(stderr.String(), "unsafe-next") {
+		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestAbsentAndNullCursorsNormalizeToTerminal(t *testing.T) {
+	for name, body := range map[string]string{
+		"absent": `{"markets":[]}`,
+		"null":   `{"markets":[],"cursor":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			app := New(Config{
+				Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+				HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, body), nil }),
+			})
+			if code := app.Run(context.Background(), []string{"markets", "list", "--compact"}); code != 0 {
+				t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), `"cursor":""`) {
+				t.Fatalf("output=%s", stdout.String())
+			}
+		})
 	}
 }
 
@@ -868,6 +970,11 @@ func TestFieldProjectionIsStrictAndWorksForNDJSON(t *testing.T) {
 	if strings.Contains(stdout.String(), "count_fp") || !strings.Contains(stdout.String(), `"trade_id":"1"`) || !strings.Contains(stdout.String(), `"record_type":"summary"`) {
 		t.Fatalf("output=%s", stdout.String())
 	}
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		if !strings.Contains(line, `"output_contract_version":"kalshi.output/trades.list/v1"`) {
+			t.Fatalf("NDJSON record lacks output contract version: %s", line)
+		}
+	}
 
 	stdout.Reset()
 	stderr.Reset()
@@ -926,7 +1033,7 @@ func TestProjectableFieldsAreDiscoverableOffline(t *testing.T) {
 	}
 }
 
-func TestKnownOptionalProjectionDoesNotDependOnReturnedValues(t *testing.T) {
+func TestKnownOptionalProjectionMaterializesNull(t *testing.T) {
 	var calls atomic.Int64
 	doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls.Add(1)
@@ -937,7 +1044,7 @@ func TestKnownOptionalProjectionDoesNotDependOnReturnedValues(t *testing.T) {
 	if code := app.Run(context.Background(), []string{"markets", "list", "--fields", "settlement_ts", "--compact"}); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	if calls.Load() != 1 || !strings.Contains(stdout.String(), `"markets":[{}]`) {
+	if calls.Load() != 1 || !strings.Contains(stdout.String(), `"markets":[{"settlement_ts":null}]`) {
 		t.Fatalf("calls=%d output=%s", calls.Load(), stdout.String())
 	}
 
@@ -948,6 +1055,107 @@ func TestKnownOptionalProjectionDoesNotDependOnReturnedValues(t *testing.T) {
 	}
 	if calls.Load() != 1 || !strings.Contains(stderr.String(), `"network":false`) {
 		t.Fatalf("calls=%d error=%s", calls.Load(), stderr.String())
+	}
+}
+
+func TestOutputContractVersionAppearsOnSuccessAndKnownErrors(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		app := New(Config{
+			Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+			HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return response(200, `{"exchange_active":true,"trading_active":true}`), nil
+			}),
+		})
+		if code := app.Run(context.Background(), []string{"exchange", "status", "--compact"}); code != 0 {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"output_contract_version":"kalshi.output/exchange.status/v1"`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	t.Run("preflight error", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr})
+		if code := app.Run(context.Background(), []string{"markets", "get", "--compact"}); code != contract.ExitUsage {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), `"output_contract_version":"kalshi.output/markets.get/v1"`) {
+			t.Fatalf("error=%s", stderr.String())
+		}
+	})
+}
+
+func TestOutputContractDriftNamesMissingRequiredFields(t *testing.T) {
+	for name, test := range map[string]struct {
+		args        []string
+		body        string
+		wantMissing string
+	}{
+		"top-level field": {
+			args:        []string{"exchange", "status", "--compact"},
+			body:        `{"exchange_active":true}`,
+			wantMissing: "trading_active",
+		},
+		"collection item field": {
+			args:        []string{"markets", "list", "--compact"},
+			body:        `{"markets":[{"ticker":"A"},{"title":"missing identity"}],"cursor":""}`,
+			wantMissing: "markets[].ticker",
+		},
+		"singleton field": {
+			args:        []string{"markets", "get", "--ticker", "A", "--compact"},
+			body:        `{"market":{"title":"missing identity"}}`,
+			wantMissing: "market.ticker",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			app := New(Config{
+				Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+				HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, test.body), nil }),
+			})
+			if code := app.Run(context.Background(), test.args); code != contract.ExitUpstream {
+				t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"code":"UPSTREAM_SCHEMA_MISMATCH"`) || !strings.Contains(stderr.String(), test.wantMissing) || !strings.Contains(stderr.String(), `"missing_fields"`) {
+				t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestOutputContractDriftReportsTypeMismatch(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"exchange_active":"yes","trading_active":true}`), nil
+		}),
+	})
+	if code := app.Run(context.Background(), []string{"exchange", "status", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{`"code":"UPSTREAM_SCHEMA_MISMATCH"`, `"type_mismatches"`, `"field":"exchange_active"`, `"expected":"boolean"`, `"actual":"string"`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("missing %s in %s", want, stderr.String())
+		}
+	}
+}
+
+func TestNDJSONSchemaDriftIsAtomic(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := New(Config{
+		Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2",
+		HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"markets":[{"title":"missing identity"}],"cursor":""}`), nil
+		}),
+	})
+	if code := app.Run(context.Background(), []string{"markets", "list", "--ndjson"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"record_type":"result"`) || !strings.Contains(stderr.String(), `"output_contract_version":"kalshi.output/markets.list/v1"`) {
+		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 }
 
