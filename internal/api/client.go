@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"kalshi-agent-cli/internal/auth"
+	"kalshi-cli/internal/auth"
 )
 
-const userAgent = "kalshi-agent-cli/1"
+const userAgent = "kalshi-cli/1"
 
 type Doer interface {
 	Do(*http.Request) (*http.Response, error)

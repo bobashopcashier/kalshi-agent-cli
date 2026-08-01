@@ -12,8 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"kalshi-agent-cli/internal/registry"
-	"kalshi-agent-cli/internal/sanitize"
+	"kalshi-cli/internal/registry"
+	"kalshi-cli/internal/sanitize"
 )
 
 const maxParamsBytes = 64 << 10

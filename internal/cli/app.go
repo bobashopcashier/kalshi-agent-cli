@@ -12,11 +12,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"kalshi-agent-cli/internal/api"
-	"kalshi-agent-cli/internal/auth"
-	"kalshi-agent-cli/internal/contract"
-	"kalshi-agent-cli/internal/registry"
-	"kalshi-agent-cli/internal/sanitize"
+	"kalshi-cli/internal/api"
+	"kalshi-cli/internal/auth"
+	"kalshi-cli/internal/contract"
+	"kalshi-cli/internal/registry"
+	"kalshi-cli/internal/sanitize"
 )
 
 const (

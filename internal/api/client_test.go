@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"kalshi-agent-cli/internal/auth"
+	"kalshi-cli/internal/auth"
 )
 
 type doerFunc func(*http.Request) (*http.Response, error)
@@ -30,6 +30,9 @@ func TestClientSignsPathWithoutQuery(t *testing.T) {
 		HTTP: doerFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Path != "/trade-api/v2/portfolio/balance" || req.URL.RawQuery != "subaccount=2" {
 				t.Fatalf("url=%s", req.URL)
+			}
+			if got := req.Header.Get("User-Agent"); got != "kalshi-cli/1" {
+				t.Fatalf("user agent=%q", got)
 			}
 			if req.Header.Get("KALSHI-ACCESS-KEY") != "kid" || req.Header.Get("KALSHI-ACCESS-TIMESTAMP") != "1700000000000" || req.Header.Get("KALSHI-ACCESS-SIGNATURE") == "" {
 				t.Fatalf("missing auth headers: %#v", req.Header)

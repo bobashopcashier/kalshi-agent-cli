@@ -14,10 +14,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"kalshi-agent-cli/internal/api"
-	"kalshi-agent-cli/internal/auth"
-	"kalshi-agent-cli/internal/contract"
-	"kalshi-agent-cli/internal/registry"
+	"kalshi-cli/internal/api"
+	"kalshi-cli/internal/auth"
+	"kalshi-cli/internal/contract"
+	"kalshi-cli/internal/registry"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

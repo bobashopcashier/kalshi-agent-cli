@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"strings"
 
-	"kalshi-agent-cli/internal/api"
-	"kalshi-agent-cli/internal/registry"
+	"kalshi-cli/internal/api"
+	"kalshi-cli/internal/registry"
 )
 
 type plan struct {

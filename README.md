@@ -13,17 +13,17 @@
 Install the latest release from the public Homebrew tap on macOS or Linux:
 
 ```sh
-brew install bobashopcashier/tap/kalshi-agent-cli
+brew install bobashopcashier/tap/kalshi-cli
 kalshi --version
 ```
 
 The fully qualified formula name adds the tap automatically and limits Homebrew trust to this formula. Upgrade later with:
 
 ```sh
-brew upgrade bobashopcashier/tap/kalshi-agent-cli
+brew upgrade bobashopcashier/tap/kalshi-cli
 ```
 
-See the [Homebrew tap](https://github.com/bobashopcashier/homebrew-tap) and [v0.1.0 release](https://github.com/bobashopcashier/kalshi-agent-cli/releases/tag/v0.1.0) for the published formula and source archive.
+See the [Homebrew tap](https://github.com/bobashopcashier/homebrew-tap) and [v0.1.0 release](https://github.com/bobashopcashier/kalshi-cli/releases/tag/v0.1.0) for the published formula and source archive.
 
 ## MVP commands
 
