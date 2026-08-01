@@ -71,6 +71,25 @@ var commands = []Command{
 		}, "event_ticker"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"event": responseField("object", "Event object."), "markets": responseField("array", "Associated markets; deprecated in favor of nested markets.")}, "event", "markets"), append(prefixedFields("event", eventProjectableFields), prefixedFields("markets", marketProjectableFields)...)...), DocsURL: "https://docs.kalshi.com/api-reference/events/get-event",
 	},
 	{
+		SchemaVersion: commandSchemaVersion, Name: "series.list", CLIPath: []string{"series", "list"},
+		Summary: "List series with exact tag and category filters.", Method: "GET", Path: "/series",
+		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
+			"category":                 str("query", "Filter by category."),
+			"tags":                     str("query", "Comma-separated exact tags; spaces inside a tag are preserved."),
+			"include_product_metadata": boolean("query", "Include product metadata."),
+			"include_volume":           boolean("query", "Include cumulative volume_fp for each series."),
+			"min_updated_ts":           integer("query", "Filter series with metadata updated after this Unix timestamp in seconds.", 0, 4102444800),
+		}), ResponseSchema: withProjectable(collectionResponse("series"), seriesProjectableFields...), DocsURL: "https://docs.kalshi.com/api-reference/market/get-series-list",
+	},
+	{
+		SchemaVersion: commandSchemaVersion, Name: "series.get", CLIPath: []string{"series", "get"},
+		Summary: "Get one series by ticker.", Method: "GET", Path: "/series/{series_ticker}",
+		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
+			"series_ticker":  withPattern(str("path", "Series ticker."), tickerPattern),
+			"include_volume": boolean("query", "Include cumulative volume_fp for the series."),
+		}, "series_ticker"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"series": responseField("object", "Series object.")}, "series"), prefixedFields("series", seriesProjectableFields)...), DocsURL: "https://docs.kalshi.com/api-reference/market/get-series",
+	},
+	{
 		SchemaVersion: commandSchemaVersion, Name: "orderbook.get", CLIPath: []string{"orderbook", "get"},
 		Summary: "Get a fixed-point market orderbook, anonymously by default or optionally signed.", Method: "GET", Path: "/markets/{ticker}/orderbook",
 		Effect: Effect{Class: "read", Network: true, AuthOptional: true}, ParamsSchema: objectSchema(map[string]Field{

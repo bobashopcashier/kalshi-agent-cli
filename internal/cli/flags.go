@@ -230,7 +230,7 @@ func boundedInt(name, raw string, min, max int) (int, error) {
 func globalOptionSchema() map[string]any {
 	return map[string]any{
 		"params":                     map[string]any{"type": "string", "description": "Strict JSON object; unknown and duplicate keys are rejected."},
-		"fields":                     map[string]any{"type": "string", "description": "Comma-separated registry-validated dotted response fields. Paths are item-relative for paginated collections and data-root-relative otherwise."},
+		"fields":                     map[string]any{"type": "string", "description": "Comma-separated registry-validated dotted response fields. Paths are item-relative for collection commands and data-root-relative otherwise."},
 		"output":                     map[string]any{"type": "string", "enum": []string{"json", "ndjson"}, "default": "json"},
 		"pretty":                     map[string]any{"type": "boolean", "description": "Pretty-print JSON."},
 		"compact":                    map[string]any{"type": "boolean", "description": "Compact JSON."},

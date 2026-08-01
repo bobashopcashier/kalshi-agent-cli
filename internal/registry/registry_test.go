@@ -4,8 +4,8 @@ import "testing"
 
 func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 	all := All()
-	if len(all) != 13 {
-		t.Fatalf("got %d commands, want 13", len(all))
+	if len(all) != 15 {
+		t.Fatalf("got %d commands, want 15", len(all))
 	}
 	names, paths := map[string]bool{}, map[string]bool{}
 	for _, cmd := range all {
@@ -51,10 +51,35 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 			}
 		}
 	}
-	for _, required := range []string{"exchange.status", "markets.list", "markets.get", "events.list", "events.get", "orderbook.get", "trades.list", "portfolio.balance", "orders.list", "orders.get", "orders.reconcile", "orders.create", "orders.cancel"} {
+	for _, required := range []string{"exchange.status", "markets.list", "markets.get", "events.list", "events.get", "series.list", "series.get", "orderbook.get", "trades.list", "portfolio.balance", "orders.list", "orders.get", "orders.reconcile", "orders.create", "orders.cancel"} {
 		if !names[required] {
 			t.Errorf("missing %s", required)
 		}
+	}
+}
+
+func TestSeriesCommandsExposeCurrentPublicContract(t *testing.T) {
+	list, ok := ByName("series.list")
+	if !ok || list.Method != "GET" || list.Path != "/series" || list.Paginated {
+		t.Fatalf("unexpected series list contract: %#v", list)
+	}
+	if list.ResponseSchema.CollectionField != "series" || list.ResponseSchema.CursorField != "" {
+		t.Fatalf("unexpected series collection metadata: %#v", list.ResponseSchema)
+	}
+	for _, name := range []string{"category", "tags", "include_product_metadata", "include_volume", "min_updated_ts"} {
+		if _, ok := list.ParamsSchema.Properties[name]; !ok {
+			t.Errorf("series.list missing parameter %s", name)
+		}
+	}
+	for _, unsupported := range []string{"cursor", "limit"} {
+		if _, ok := list.ParamsSchema.Properties[unsupported]; ok {
+			t.Errorf("series.list must not expose ignored upstream parameter %s", unsupported)
+		}
+	}
+
+	get, ok := ByName("series.get")
+	if !ok || get.Method != "GET" || get.Path != "/series/{series_ticker}" {
+		t.Fatalf("unexpected series get contract: %#v", get)
 	}
 }
 

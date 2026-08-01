@@ -107,6 +107,12 @@ func paginatedResponse(collection string, extra map[string]ResponseField) Respon
 	return schema
 }
 
+func collectionResponse(collection string) ResponseSchema {
+	schema := responseObject(map[string]ResponseField{collection: responseField("array", "Items returned by the upstream API.")}, collection)
+	schema.CollectionField = collection
+	return schema
+}
+
 func withProjectable(schema ResponseSchema, fields ...string) ResponseSchema {
 	schema.ProjectableFields = append([]string(nil), fields...)
 	sort.Strings(schema.ProjectableFields)

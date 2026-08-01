@@ -23,7 +23,7 @@ The fully qualified formula name adds the tap automatically and limits Homebrew 
 brew upgrade bobashopcashier/tap/kalshi-cli
 ```
 
-See the [Homebrew tap](https://github.com/bobashopcashier/homebrew-tap) and [v0.1.0 release](https://github.com/bobashopcashier/kalshi-cli/releases/tag/v0.1.0) for the published formula and source archive.
+See the [Homebrew tap](https://github.com/bobashopcashier/homebrew-tap) and [releases](https://github.com/bobashopcashier/kalshi-cli/releases) for the published formula and source archives.
 
 ## MVP commands
 
@@ -32,6 +32,7 @@ See the [Homebrew tap](https://github.com/bobashopcashier/homebrew-tap) and [v0.
 | `exchange status` | read | public |
 | `markets list`, `markets get` | read | public |
 | `events list`, `events get` | read | public |
+| `series list`, `series get` | read | public |
 | `orderbook get` | read | anonymous by default, optional signed mode |
 | `trades list` | read | public |
 | `portfolio balance` | read | required |
@@ -90,6 +91,16 @@ Or use convenience flags derived from the same schema:
 ./bin/kalshi markets list --status open --limit 100
 ```
 
+Series tags are exact and case-sensitive. Multiple tags are comma-separated and match either tag; spaces inside one tag are preserved:
+
+```sh
+./bin/kalshi series list \
+  --environment production \
+  --params '{"tags":"Fed","include_volume":true}' \
+  --fields ticker,title,tags,volume_fp \
+  --compact
+```
+
 Unknown keys, duplicate JSON keys, wrong types, trailing JSON, control/bidi characters, repeated flags, and supplying the same field in both forms are rejected before network access.
 
 ## Output contract
@@ -107,13 +118,13 @@ Use `--fields` to keep model context focused:
   --compact
 ```
 
-Fields are comma-separated, case-sensitive dotted member paths. For paginated commands they are relative to each collection item; the collection wrapper, upstream cursor, and pagination metadata are always retained. For non-paginated reads and discovery they are relative to `data`, so a single market uses `--fields market.ticker,market.title`. Dotted traversal applies elementwise through arrays: `price_ranges.start` means `price_ranges[*].start`. Projection is local and is never sent to Kalshi.
+Fields are comma-separated, case-sensitive dotted member paths. For collection commands they are relative to each item; cursor-paginated commands also retain the upstream cursor and pagination metadata. For singleton reads and discovery they are relative to `data`, so a single market uses `--fields market.ticker,market.title`. Dotted traversal applies elementwise through arrays: `price_ranges.start` means `price_ranges[*].start`. Projection is local and is never sent to Kalshi.
 
 Network-command selectors are checked before execution against the offline registry's `x-projectable-fields`; typos fail without a request. Valid optional fields that are absent from a particular response are simply omitted. The path grammar supports identifier-like JSON keys, hyphens, and `$schema`; keys containing literal dots are not projectable.
 
 `--fields` is available for successful reads and discovery. It is rejected for mutations, dry-runs, and command help so it cannot hide a write result, plan, digest, or contract.
 
-List commands default to one page, 100 items, and a 1 MiB final output budget. Hard flag ceilings are 10 pages, 1,000 items, and 8 MiB. Successful partial results caused by page or item ceilings set `meta.truncation.truncated`, name the reasons (`max_pages` or `max_items`), and preserve `next_cursor`.
+Cursor-paginated list commands default to one page, 100 items, and a 1 MiB final output budget. Hard flag ceilings are 10 pages, 1,000 items, and 8 MiB. Successful partial results caused by page or item ceilings set `meta.truncation.truncated`, name the reasons (`max_pages` or `max_items`), and preserve `next_cursor`. Kalshi's `series list` endpoint is a single-response collection with no cursor; use a tag or category filter to keep the upstream response within the CLI's fixed 8 MiB response cap.
 
 The final result must fit `--max-bytes` atomically. If it does not, the CLI returns `OUTPUT_LIMIT` and no partial success or post-page cursor. Add or narrow fields, or raise the cap. This fail-closed behavior is a safety correction from the earlier successful render-time truncation contract: an opaque upstream cursor cannot safely resume midway through omitted records.
 
