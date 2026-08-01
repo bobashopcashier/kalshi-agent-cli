@@ -48,21 +48,24 @@ type ResponseSchema struct {
 	CollectionField      string                   `json:"x-collection-field,omitempty"`
 	CursorField          string                   `json:"x-cursor-field,omitempty"`
 	ProjectableFields    []string                 `json:"x-projectable-fields,omitempty"`
+	RequiredFields       []string                 `json:"x-required-fields,omitempty"`
+	RequiredFieldTypes   map[string]string        `json:"x-required-field-types,omitempty"`
 }
 
 type Command struct {
-	SchemaVersion  string         `json:"schema_version"`
-	Name           string         `json:"name"`
-	CLIPath        []string       `json:"cli_path"`
-	Summary        string         `json:"summary"`
-	Method         string         `json:"method"`
-	Path           string         `json:"path"`
-	Effect         Effect         `json:"effect"`
-	ParamsSchema   Schema         `json:"params_schema"`
-	ResponseSchema ResponseSchema `json:"response_schema"`
-	DocsURL        string         `json:"docs_url"`
-	Paginated      bool           `json:"x-paginated,omitempty"`
-	LocalFilter    string         `json:"x-local-filter,omitempty"`
+	SchemaVersion         string         `json:"schema_version"`
+	OutputContractVersion string         `json:"output_contract_version"`
+	Name                  string         `json:"name"`
+	CLIPath               []string       `json:"cli_path"`
+	Summary               string         `json:"summary"`
+	Method                string         `json:"method"`
+	Path                  string         `json:"path"`
+	Effect                Effect         `json:"effect"`
+	ParamsSchema          Schema         `json:"params_schema"`
+	ResponseSchema        ResponseSchema `json:"response_schema"`
+	DocsURL               string         `json:"docs_url"`
+	Paginated             bool           `json:"x-paginated,omitempty"`
+	LocalFilter           string         `json:"x-local-filter,omitempty"`
 }
 
 func ptr(v int64) *int64 { return &v }
@@ -116,6 +119,16 @@ func collectionResponse(collection string) ResponseSchema {
 func withProjectable(schema ResponseSchema, fields ...string) ResponseSchema {
 	schema.ProjectableFields = append([]string(nil), fields...)
 	sort.Strings(schema.ProjectableFields)
+	return schema
+}
+
+func withRequiredStringFields(schema ResponseSchema, fields ...string) ResponseSchema {
+	schema.RequiredFields = append([]string(nil), fields...)
+	sort.Strings(schema.RequiredFields)
+	schema.RequiredFieldTypes = make(map[string]string, len(fields))
+	for _, field := range fields {
+		schema.RequiredFieldTypes[field] = "string"
+	}
 	return schema
 }
 

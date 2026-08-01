@@ -97,6 +97,30 @@ func TestProjectionMissingFieldFailsUnlessCollectionEmpty(t *testing.T) {
 	}
 }
 
+func TestResponseProjectionMaterializesMissingOptionalFields(t *testing.T) {
+	data := map[string]any{
+		"markets": []any{
+			map[string]any{"ticker": "A"},
+			map[string]any{"ticker": "B", "settlement_ts": "2026-08-01T00:00:00Z"},
+		},
+		"cursor": "",
+	}
+	projected, err := projectResponseData(data, []string{"ticker", "settlement_ts"}, "markets", "cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"markets": []any{
+			map[string]any{"ticker": "A", "settlement_ts": nil},
+			map[string]any{"ticker": "B", "settlement_ts": "2026-08-01T00:00:00Z"},
+		},
+		"cursor": "",
+	}
+	if !reflect.DeepEqual(projected, want) {
+		t.Fatalf("projected=%#v", projected)
+	}
+}
+
 func TestProjectionRejectsNonObjectCollectionItems(t *testing.T) {
 	data := map[string]any{"markets": []any{"bad"}, "cursor": "next"}
 	if _, err := projectData(data, []string{"ticker"}, "markets", "cursor"); err == nil || !strings.Contains(err.Error(), "not an object") {

@@ -53,14 +53,15 @@ type APIError struct {
 }
 
 type Envelope struct {
-	SchemaVersion string    `json:"schema_version"`
-	OK            bool      `json:"ok"`
-	Command       string    `json:"command"`
-	RecordType    string    `json:"record_type,omitempty"`
-	Effect        Effect    `json:"effect"`
-	Data          any       `json:"data,omitempty"`
-	Error         *APIError `json:"error,omitempty"`
-	Meta          Meta      `json:"meta"`
+	SchemaVersion         string    `json:"schema_version"`
+	OutputContractVersion string    `json:"output_contract_version"`
+	OK                    bool      `json:"ok"`
+	Command               string    `json:"command"`
+	RecordType            string    `json:"record_type,omitempty"`
+	Effect                Effect    `json:"effect"`
+	Data                  any       `json:"data,omitempty"`
+	Error                 *APIError `json:"error,omitempty"`
+	Meta                  Meta      `json:"meta"`
 }
 
 const (

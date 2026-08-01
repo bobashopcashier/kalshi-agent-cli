@@ -66,6 +66,8 @@ type cliError struct {
 	HTTPStatus     int
 	Details        any
 	Retry          *contract.Retry
+	Pagination     *contract.Pagination
+	Truncation     *contract.Truncation
 	Attempted      bool
 	MutationStatus string
 }
@@ -150,10 +152,15 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if runErr != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, runErr)
 	}
+	if err := validateOutputContract(cmd, data); err != nil {
+		problem := withContractProgress(upstreamSchemaProblem(cmd, err, retry), page, truncation)
+		return a.emitError(cmd.Name, opts, cmd.Effect, problem)
+	}
 	if len(opts.Fields) > 0 {
 		data, err = projectResponseData(data, opts.Fields, cmd.ResponseSchema.CollectionField, cmd.ResponseSchema.CursorField)
 		if err != nil {
-			return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), Retry: retry, Attempted: true, MutationStatus: "not_applicable"})
+			problem := withContractProgress(upstreamSchemaProblem(cmd, err, retry), page, truncation)
+			return a.emitError(cmd.Name, opts, cmd.Effect, problem)
 		}
 	}
 	status := mutationStatus(cmd, true, true)
@@ -314,12 +321,34 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 				}
 			}
 		}
-		pageItems, ok := page[collection].([]any)
+		rawItems, exists := page[collection]
+		pageItems, ok := rawItems.([]any)
+		if !exists {
+			problem := upstreamSchemaProblem(cmd, &responseContractError{MissingFields: []string{collection}}, visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
+		}
 		if !ok {
-			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: "upstream collection field is missing or not an array", Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
+			problem := upstreamSchemaProblem(cmd, &responseContractError{TypeMismatches: []responseTypeMismatch{{Field: collection, Expected: "array", Actual: responseValueType(rawItems)}}}, visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
 		}
 		if len(pageItems) > pageLimit {
-			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: "upstream returned more collection items than the requested page limit", Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
+			problem := upstreamSchemaProblem(cmd, errors.New("upstream returned more collection items than the requested page limit"), visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
+		}
+		next, err := validatedPageCursor(page, cursorField)
+		if err != nil {
+			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
+		}
+		page[cursorField] = next
+		if err := validateOutputContract(cmd, page); err != nil {
+			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
 		}
 		scanned += len(pageItems)
 		if cmd.LocalFilter != "" {
@@ -332,10 +361,6 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 			}
 		} else {
 			items = append(items, pageItems...)
-		}
-		next, err := validatedPageCursor(page, cursorField)
-		if err != nil {
-			return nil, nil, visibleRetry(retry), truncation, &cliError{Exit: contract.ExitUpstream, Code: "UPSTREAM_SCHEMA_MISMATCH", Message: err.Error(), Retry: visibleRetry(retry), Attempted: true, MutationStatus: "not_applicable"}
 		}
 		cursor = next
 		if cursor == "" {
@@ -490,7 +515,7 @@ func mutationStatus(cmd registry.Command, attempted, success bool) string {
 }
 
 func (a *App) successEnvelope(command string, effect registry.Effect, opts options, data any, status string) contract.Envelope {
-	return contract.Envelope{SchemaVersion: contract.SchemaVersion, OK: true, Command: command, Effect: contractEffect(effect, opts.DryRun, !opts.DryRun && effect.Network, status), Data: data, Meta: contract.Meta{RequestID: requestID(), Environment: opts.Environment, Truncation: contract.Truncation{Reasons: []string{}}}}
+	return contract.Envelope{SchemaVersion: contract.SchemaVersion, OutputContractVersion: outputContractVersion(command), OK: true, Command: command, Effect: contractEffect(effect, opts.DryRun, !opts.DryRun && effect.Network, status), Data: data, Meta: contract.Meta{RequestID: requestID(), Environment: opts.Environment, Truncation: contract.Truncation{Reasons: []string{}}}}
 }
 
 func (a *App) emitError(command string, opts options, effect registry.Effect, problem *cliError) int {
@@ -502,7 +527,14 @@ func (a *App) emitError(command string, opts options, effect registry.Effect, pr
 	if status == "" {
 		status = mutationStatus(registry.Command{Effect: effect}, problem.Attempted, false)
 	}
-	env := contract.Envelope{SchemaVersion: contract.SchemaVersion, OK: false, Command: command, Effect: contractEffect(effect, opts.DryRun, problem.Attempted, status), Error: &contract.APIError{Code: problem.Code, Message: message, Retryable: problem.Retryable, HTTPStatus: problem.HTTPStatus, Details: problem.Details}, Meta: contract.Meta{RequestID: requestID(), Environment: opts.Environment, Retry: problem.Retry, Truncation: contract.Truncation{Reasons: []string{}}}}
+	meta := contract.Meta{RequestID: requestID(), Environment: opts.Environment, Retry: problem.Retry, Pagination: problem.Pagination, Truncation: contract.Truncation{Reasons: []string{}}}
+	if problem.Truncation != nil {
+		meta.Truncation = *problem.Truncation
+		if meta.Truncation.Reasons == nil {
+			meta.Truncation.Reasons = []string{}
+		}
+	}
+	env := contract.Envelope{SchemaVersion: contract.SchemaVersion, OutputContractVersion: outputContractVersion(command), OK: false, Command: command, Effect: contractEffect(effect, opts.DryRun, problem.Attempted, status), Error: &contract.APIError{Code: problem.Code, Message: message, Retryable: problem.Retryable, HTTPStatus: problem.HTTPStatus, Details: problem.Details}, Meta: meta}
 	if err := render(a.cfg.Stderr, &env, opts, ""); err != nil {
 		return contract.ExitOutput
 	}
@@ -520,7 +552,7 @@ func validatedPageCursor(page map[string]any, cursorField string) (string, error
 	}
 	cursor, ok := raw.(string)
 	if !ok {
-		return "", errors.New("upstream pagination cursor is not a string or null")
+		return "", &responseContractError{TypeMismatches: []responseTypeMismatch{{Field: cursorField, Expected: "string", Actual: responseValueType(raw)}}}
 	}
 	if len(cursor) > maxCursorBytes {
 		return "", errors.New("upstream pagination cursor exceeds 64 KiB")

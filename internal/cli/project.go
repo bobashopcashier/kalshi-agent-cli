@@ -26,6 +26,14 @@ type selectorNode struct {
 	children map[string]*selectorNode
 }
 
+type missingProjectionFieldsError struct {
+	Fields []string
+}
+
+func (e *missingProjectionFieldsError) Error() string {
+	return "response did not contain selected field(s): " + strings.Join(e.Fields, ", ")
+}
+
 func parseFields(raw string) ([]string, error) {
 	if raw == "" {
 		return nil, errors.New("--fields must not be empty")
@@ -73,21 +81,21 @@ func parseFields(raw string) ([]string, error) {
 }
 
 func projectData(data map[string]any, fields []string, collection, cursorField string) (map[string]any, error) {
-	return projectDataWithPresence(data, fields, collection, cursorField, true)
+	return projectDataWithPresence(data, fields, collection, cursorField, true, false)
 }
 
 func projectResponseData(data map[string]any, fields []string, collection, cursorField string) (map[string]any, error) {
-	return projectDataWithPresence(data, fields, collection, cursorField, false)
+	return projectDataWithPresence(data, fields, collection, cursorField, false, true)
 }
 
-func projectDataWithPresence(data map[string]any, fields []string, collection, cursorField string, requirePresence bool) (map[string]any, error) {
+func projectDataWithPresence(data map[string]any, fields []string, collection, cursorField string, requirePresence, materializeMissing bool) (map[string]any, error) {
 	if len(fields) == 0 {
 		return data, nil
 	}
 	selector := buildSelector(fields)
 	if collection == "" {
 		matches := map[string]bool{}
-		projected := projectValue(data, selector, matches)
+		projected := projectValue(data, selector, matches, materializeMissing)
 		if requirePresence {
 			if err := missingProjectionFields(fields, matches); err != nil {
 				return nil, err
@@ -105,17 +113,26 @@ func projectDataWithPresence(data map[string]any, fields []string, collection, c
 		return nil, fmt.Errorf("response collection %q is missing or not an array", collection)
 	}
 	projectedItems := make([]any, len(rawItems))
-	matches := map[string]bool{}
+	missingSet := map[string]bool{}
 	for i, item := range rawItems {
 		if _, ok := item.(map[string]any); !ok {
 			return nil, fmt.Errorf("response collection %q item %d is not an object", collection, i)
 		}
-		projectedItems[i] = projectValue(item, selector, matches)
-	}
-	if requirePresence && len(rawItems) > 0 {
-		if err := missingProjectionFields(fields, matches); err != nil {
-			return nil, err
+		matches := map[string]bool{}
+		projectedItems[i] = projectValue(item, selector, matches, materializeMissing)
+		if requirePresence {
+			for _, field := range missingProjectionFieldNames(fields, matches) {
+				missingSet[field] = true
+			}
 		}
+	}
+	if len(missingSet) > 0 {
+		missing := make([]string, 0, len(missingSet))
+		for field := range missingSet {
+			missing = append(missing, field)
+		}
+		sort.Strings(missing)
+		return nil, &missingProjectionFieldsError{Fields: missing}
 	}
 	result := map[string]any{collection: projectedItems}
 	if cursorField != "" {
@@ -183,7 +200,7 @@ func buildSelector(fields []string) *selectorNode {
 	return root
 }
 
-func projectValue(value any, selector *selectorNode, matches map[string]bool) any {
+func projectValue(value any, selector *selectorNode, matches map[string]bool, materializeMissing bool) any {
 	if selector.leaf != "" {
 		matches[selector.leaf] = true
 		return value
@@ -193,14 +210,19 @@ func projectValue(value any, selector *selectorNode, matches map[string]bool) an
 		out := map[string]any{}
 		for name, child := range selector.children {
 			if selected, ok := source[name]; ok {
-				out[name] = projectValue(selected, child, matches)
+				out[name] = projectValue(selected, child, matches, materializeMissing)
+			} else if materializeMissing {
+				out[name] = nil
 			}
 		}
 		return out
 	case []any:
+		if len(source) == 0 {
+			markSelectorLeaves(selector, matches)
+		}
 		out := make([]any, len(source))
 		for i, item := range source {
-			out[i] = projectValue(item, selector, matches)
+			out[i] = projectValue(item, selector, matches, materializeMissing)
 		}
 		return out
 	default:
@@ -208,16 +230,30 @@ func projectValue(value any, selector *selectorNode, matches map[string]bool) an
 	}
 }
 
+func markSelectorLeaves(selector *selectorNode, matches map[string]bool) {
+	if selector.leaf != "" {
+		matches[selector.leaf] = true
+	}
+	for _, child := range selector.children {
+		markSelectorLeaves(child, matches)
+	}
+}
+
 func missingProjectionFields(fields []string, matches map[string]bool) error {
+	missing := missingProjectionFieldNames(fields, matches)
+	if len(missing) == 0 {
+		return nil
+	}
+	return &missingProjectionFieldsError{Fields: missing}
+}
+
+func missingProjectionFieldNames(fields []string, matches map[string]bool) []string {
 	var missing []string
 	for _, field := range fields {
 		if !matches[field] {
 			missing = append(missing, field)
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
 	sort.Strings(missing)
-	return fmt.Errorf("response did not contain selected field(s): %s", strings.Join(missing, ", "))
+	return missing
 }
