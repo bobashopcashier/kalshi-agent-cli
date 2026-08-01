@@ -1,4 +1,4 @@
-# kalshi-agent-cli
+# kalshi-cli
 
 `kalshi` is a JSON-first, agent-native Go CLI for Kalshi's Predictions Trade API. It exposes a small, current V2 surface through one authoritative offline registry, strict schemas, bounded execution, and explicit mutation gates.
 
