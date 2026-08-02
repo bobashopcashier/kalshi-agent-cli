@@ -4,8 +4,8 @@ import "testing"
 
 func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 	all := All()
-	if len(all) != 15 {
-		t.Fatalf("got %d commands, want 15", len(all))
+	if len(all) != 21 {
+		t.Fatalf("got %d commands, want 21", len(all))
 	}
 	if len(outputContractRevisions) != len(all) {
 		t.Fatalf("got %d output contract revisions for %d commands", len(outputContractRevisions), len(all))
@@ -64,6 +64,23 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 			if len(cmd.ResponseSchema.RequiredFieldTypes) != len(cmd.ResponseSchema.RequiredFields) {
 				t.Errorf("%s required response field types do not match required fields", cmd.Name)
 			}
+			seenDefaults := map[string]bool{}
+			for _, field := range cmd.DefaultFields {
+				if !seenFields[field] {
+					t.Errorf("%s defaults to non-projectable response field %s", cmd.Name, field)
+				}
+				if seenDefaults[field] {
+					t.Errorf("%s repeats default response field %s", cmd.Name, field)
+				}
+				seenDefaults[field] = true
+			}
+			if cmd.LocalMatch != nil {
+				for _, field := range cmd.LocalMatch.Fields {
+					if !seenFields[field] || cmd.ResponseSchema.RequiredFieldTypes[field] != "string" {
+						t.Errorf("%s locally matches field %s without a required string contract", cmd.Name, field)
+					}
+				}
+			}
 			for path, fieldContract := range cmd.ResponseSchema.ProjectedContracts {
 				if !seenFields[path] {
 					t.Errorf("%s constrains non-projectable response field %s", cmd.Name, path)
@@ -73,8 +90,27 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 				default:
 					t.Errorf("%s projected response field %s has unsupported type %q", cmd.Name, path, fieldContract.Type)
 				}
-				if fieldContract.Format != "" && (fieldContract.Type != "string" || fieldContract.Format != "date-time") {
-					t.Errorf("%s projected response field %s has unsupported type/format %q/%q", cmd.Name, path, fieldContract.Type, fieldContract.Format)
+				if fieldContract.Format != "" {
+					if fieldContract.Type != "string" {
+						t.Errorf("%s projected response field %s has unsupported type/format %q/%q", cmd.Name, path, fieldContract.Type, fieldContract.Format)
+					}
+					switch fieldContract.Format {
+					case "date-time", "fixed-point-count", "fixed-point-dollars":
+					default:
+						t.Errorf("%s projected response field %s has unsupported format %q", cmd.Name, path, fieldContract.Format)
+					}
+				}
+				if len(fieldContract.Enum) > 0 {
+					if fieldContract.Type != "string" {
+						t.Errorf("%s projected response field %s has enum on non-string type %q", cmd.Name, path, fieldContract.Type)
+					}
+					seenValues := map[string]bool{}
+					for _, value := range fieldContract.Enum {
+						if value == "" || seenValues[value] {
+							t.Errorf("%s projected response field %s has invalid enum value %q", cmd.Name, path, value)
+						}
+						seenValues[value] = true
+					}
 				}
 			}
 			seenAliases := map[string]bool{}
@@ -87,6 +123,21 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 				}
 				seenAliases[alias] = true
 			}
+			if cmd.ResponseSchema.RequireCursorPresence && (!cmd.Paginated || cmd.ResponseSchema.CursorField == "") {
+				t.Errorf("%s requires cursor presence without pagination metadata", cmd.Name)
+			}
+		}
+		if cmd.LocalMatch != nil {
+			field, ok := cmd.ParamsSchema.Properties[cmd.LocalMatch.Parameter]
+			if !ok || field.Location != "local" || field.Type != "string" {
+				t.Errorf("%s has invalid local match parameter %s", cmd.Name, cmd.LocalMatch.Parameter)
+			}
+			if cmd.LocalMatch.Mode != "exact" && cmd.LocalMatch.Mode != "contains_case_insensitive" {
+				t.Errorf("%s has invalid local match mode %s", cmd.Name, cmd.LocalMatch.Mode)
+			}
+			if len(cmd.LocalMatch.Fields) == 0 {
+				t.Errorf("%s has no local match fields", cmd.Name)
+			}
 		}
 		for _, required := range cmd.ParamsSchema.Required {
 			if _, ok := cmd.ParamsSchema.Properties[required]; !ok {
@@ -94,7 +145,7 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 			}
 		}
 	}
-	for _, required := range []string{"exchange.status", "markets.list", "markets.get", "events.list", "events.get", "series.list", "series.get", "orderbook.get", "trades.list", "portfolio.balance", "orders.list", "orders.get", "orders.reconcile", "orders.create", "orders.cancel"} {
+	for _, required := range []string{"exchange.status", "markets.list", "markets.get", "markets.search", "events.list", "events.get", "series.list", "series.get", "orderbook.get", "trades.list", "candlesticks.get", "candlesticks.historical", "portfolio.balance", "portfolio.positions", "portfolio.pnl", "portfolio.fills", "orders.list", "orders.get", "orders.reconcile", "orders.create", "orders.cancel"} {
 		if !names[required] {
 			t.Errorf("missing %s", required)
 		}
@@ -131,7 +182,7 @@ func TestCommandsExposeProjectedContractsAndCursorAliases(t *testing.T) {
 	if !ok {
 		t.Fatal("markets.list is not registered")
 	}
-	if Version != "kalshi.registry/v3" {
+	if Version != "kalshi.registry/v4" {
 		t.Fatalf("registry version=%q", Version)
 	}
 	if got := list.ResponseSchema.ProjectedContracts["title"]; got.Type != "string" || got.Format != "" {
@@ -170,6 +221,67 @@ func TestCommandsExposeProjectedContractsAndCursorAliases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPortfolioSearchAndCandlestickContracts(t *testing.T) {
+	search, ok := ByName("markets.search")
+	if !ok || search.Path != "/markets" || !search.Paginated || search.LocalMatch == nil {
+		t.Fatalf("unexpected market search contract: %#v", search)
+	}
+	if search.LocalMatch.Parameter != "query" || search.LocalMatch.Mode != "contains_case_insensitive" {
+		t.Fatalf("unexpected local match: %#v", search.LocalMatch)
+	}
+
+	for _, name := range []string{"portfolio.positions", "portfolio.pnl", "portfolio.fills"} {
+		command, ok := ByName(name)
+		if !ok || !command.Effect.AuthRequired || !command.Paginated {
+			t.Fatalf("unexpected %s contract: %#v", name, command)
+		}
+	}
+	positions, _ := ByName("portfolio.positions")
+	for _, field := range []string{"position_fp", "market_exposure_dollars", "realized_pnl_dollars", "fees_paid_dollars"} {
+		if positions.ResponseSchema.RequiredFieldTypes[field] != "string" {
+			t.Errorf("positions missing fixed-point contract for %s", field)
+		}
+	}
+	fills, _ := ByName("portfolio.fills")
+	if fills.ResponseSchema.RequiredFieldTypes["count_fp"] != "string" || fills.ResponseSchema.RequiredFieldTypes["is_taker"] != "boolean" {
+		t.Fatalf("unexpected fills field contracts: %#v", fills.ResponseSchema.RequiredFieldTypes)
+	}
+	if containsString(fills.ResponseSchema.RequiredFields, "trade_id") || containsString(fills.ResponseSchema.RequiredFields, "market_ticker") {
+		t.Fatal("fills must not require deprecated aliases")
+	}
+	if containsString(fills.ResponseSchema.ProjectableFields, "trade_id") || containsString(fills.ResponseSchema.ProjectableFields, "market_ticker") || containsString(fills.ResponseSchema.ProjectableFields, "ts") {
+		t.Fatal("fills must not project deprecated aliases")
+	}
+	if !fills.ResponseSchema.RequireCursorPresence || containsString(fills.DefaultFields, "created_time") || containsString(fills.DefaultFields, "subaccount_number") {
+		t.Fatalf("unexpected fills cursor/default contract: %#v", fills)
+	}
+	if got := fills.ResponseSchema.ProjectedContracts["outcome_side"].Enum; len(got) != 2 || got[0] != "yes" || got[1] != "no" {
+		t.Fatalf("outcome_side enum=%#v", got)
+	}
+	if got := fills.ResponseSchema.ProjectedContracts["book_side"].Enum; len(got) != 2 || got[0] != "bid" || got[1] != "ask" {
+		t.Fatalf("book_side enum=%#v", got)
+	}
+	pnl, _ := ByName("portfolio.pnl")
+	if containsString(pnl.ResponseSchema.ProjectableFields, "total_traded_dollars") {
+		t.Fatal("portfolio.pnl must expose only its P&L projection")
+	}
+
+	current, _ := ByName("candlesticks.get")
+	historical, _ := ByName("candlesticks.historical")
+	if current.Path != "/series/{series_ticker}/markets/{ticker}/candlesticks" || historical.Path != "/historical/markets/{ticker}/candlesticks" {
+		t.Fatalf("unexpected candlestick paths: %s %s", current.Path, historical.Path)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWritesUseCurrentV2Paths(t *testing.T) {

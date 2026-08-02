@@ -10,6 +10,8 @@ Stable, bounded JSON for agents using Kalshi.
 - Bounded pagination and output
 - Governed, deny-by-default writes
 - Offline command and schema discovery
+- Fixed-point positions, realized P&L, fills, and candlesticks
+- Bounded local keyword search over the documented market feed
 
 ## Install
 
@@ -62,6 +64,48 @@ below is currently on `main`; check the
 [releases](https://github.com/bobashopcashier/kalshi-cli/releases) before assuming
 an older package has the same contract.
 
+## Portfolio, search, and history
+
+Portfolio reads preserve Kalshi's canonical fixed-point strings. `portfolio
+pnl` reports Kalshi's realized P&L, exposure, and fees per live-tier market; it
+does not invent an unrealized or fee-net P&L calculation:
+
+```sh
+kalshi portfolio positions --environment production --max-pages 2 --compact
+kalshi portfolio pnl --environment production --max-pages 2 --compact
+kalshi portfolio fills --environment production --ticker KXFED-1 --compact
+```
+
+Kalshi does not document a general full-text search endpoint. `markets search`
+therefore scans bounded `/markets` pages and performs deterministic,
+case-insensitive substring matching over `ticker`, `event_ticker`,
+`yes_sub_title`, and `no_sub_title`:
+
+```sh
+kalshi markets search --query fed --status open \
+  --max-pages 3 --max-items 300 \
+  --fields ticker,event_ticker,yes_sub_title,no_sub_title --compact
+```
+
+Search results preserve upstream order and are not relevance-ranked. Zero
+matches are conclusive only when `meta.pagination.next_cursor` is empty and
+`meta.truncation.truncated` is false.
+
+Live-tier and archived markets use separate candlestick commands and contracts:
+
+```sh
+kalshi candlesticks get \
+  --series-ticker KXFED --ticker KXFED-1 \
+  --start-ts 1767225600 --end-ts 1767312000 --period-interval 60 --compact
+
+kalshi candlesticks historical \
+  --ticker KXFED-OLD --start-ts 1704067200 --end-ts 1704153600 \
+  --period-interval 60 --compact
+```
+
+The CLI rejects a requested candle range whose maximum possible points exceeds
+`--max-items`; narrow the interval or explicitly raise the bound.
+
 ## Benchmarks
 
 ### Schema-drift containment
@@ -83,7 +127,7 @@ The CLI included the expected path in all 32 rejections, emitted exact v1 output
 contract identifiers in all 48 cases, and withheld valid first pages in both
 later-page drift cases. The four former gaps are covered by explicit
 task-required paths, projected type/format contracts, and cursor-alias drift
-detection. The offline registry is `kalshi.registry/v3`; per-command output
+detection. The offline registry is `kalshi.registry/v4`; per-command output
 shapes remain `kalshi.output/.../v1`.
 
 Run the matrix with:

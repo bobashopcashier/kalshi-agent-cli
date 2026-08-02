@@ -34,6 +34,9 @@ type policySummary struct {
 }
 
 func makePlan(cmd registry.Command, params map[string]any, opts options) (plan, string, error) {
+	if err := validateReadBounds(cmd, params, opts); err != nil {
+		return plan{}, "", err
+	}
 	req, err := buildRequest(cmd, params, "", 0)
 	if err != nil {
 		return plan{}, "", err
@@ -58,6 +61,34 @@ func makePlan(cmd registry.Command, params map[string]any, opts options) (plan, 
 	}
 	hash := sha256.Sum256(canonical)
 	return p, "sha256:" + hex.EncodeToString(hash[:]), nil
+}
+
+func validateReadBounds(cmd registry.Command, params map[string]any, opts options) error {
+	if cmd.Name != "candlesticks.get" && cmd.Name != "candlesticks.historical" {
+		return nil
+	}
+	maximum, ok := candlestickRangeMaximum(params)
+	if !ok {
+		return nil // Cross-field schema validation reports these first.
+	}
+	if maximum > int64(opts.MaxItems) {
+		return fmt.Errorf("requested range can contain %d candlesticks and exceeds --max-items=%d; narrow the range or raise the limit", maximum, opts.MaxItems)
+	}
+	return nil
+}
+
+func candlestickRangeMaximum(params map[string]any) (int64, bool) {
+	start, startOK := params["start_ts"].(int64)
+	end, endOK := params["end_ts"].(int64)
+	periodMinutes, periodOK := params["period_interval"].(int64)
+	if !startOK || !endOK || !periodOK || start > end || periodMinutes <= 0 {
+		return 0, false
+	}
+	maximum := (end-start)/(periodMinutes*60) + 1
+	if include, _ := params["include_latest_before_start"].(bool); include {
+		maximum++
+	}
+	return maximum, true
 }
 
 func evaluatePolicy(cmd registry.Command, params map[string]any, opts options) (policySummary, error) {

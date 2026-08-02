@@ -25,10 +25,17 @@ type responseFormatMismatch struct {
 	Actual   string `json:"actual"`
 }
 
+type responseValueMismatch struct {
+	Field    string   `json:"field"`
+	Expected []string `json:"expected"`
+	Actual   string   `json:"actual"`
+}
+
 type responseContractError struct {
 	MissingFields    []string
 	TypeMismatches   []responseTypeMismatch
 	FormatMismatches []responseFormatMismatch
+	ValueMismatches  []responseValueMismatch
 	UnexpectedFields []string
 }
 
@@ -51,6 +58,13 @@ func (e *responseContractError) Error() string {
 		}
 		parts = append(parts, "format mismatch(es): "+strings.Join(items, ", "))
 	}
+	if len(e.ValueMismatches) > 0 {
+		items := make([]string, len(e.ValueMismatches))
+		for i, mismatch := range e.ValueMismatches {
+			items[i] = fmt.Sprintf("%s (expected one of %s)", mismatch.Field, strings.Join(mismatch.Expected, ", "))
+		}
+		parts = append(parts, "value mismatch(es): "+strings.Join(items, ", "))
+	}
 	if len(e.UnexpectedFields) > 0 {
 		parts = append(parts, "unexpected field(s): "+strings.Join(e.UnexpectedFields, ", "))
 	}
@@ -62,6 +76,7 @@ func validateOutputContract(command registry.Command, data map[string]any, selec
 	missingSet := map[string]bool{}
 	mismatchByField := map[string]responseTypeMismatch{}
 	formatMismatchByField := map[string]responseFormatMismatch{}
+	valueMismatchByField := map[string]responseValueMismatch{}
 	for _, name := range schema.Required {
 		if _, exists := data[name]; !exists {
 			missingSet[name] = true
@@ -69,7 +84,7 @@ func validateOutputContract(command registry.Command, data map[string]any, selec
 	}
 	for name, field := range schema.Properties {
 		value, exists := data[name]
-		if !exists || matchesResponseType(value, field.Type) {
+		if !exists || (value == nil && field.Nullable) || matchesResponseType(value, field.Type) {
 			continue
 		}
 		mismatchByField[name] = responseTypeMismatch{Field: name, Expected: field.Type, Actual: responseValueType(value)}
@@ -81,8 +96,22 @@ func validateOutputContract(command registry.Command, data map[string]any, selec
 			return
 		}
 		expected := schema.RequiredFieldTypes[field]
+		fieldContract, constrained := schema.ProjectedContracts[field]
 		for _, value := range values {
+			if value == nil && constrained && fieldContract.Nullable {
+				continue
+			}
 			if matchesResponseType(value, expected) {
+				if constrained && fieldContract.Format != "" && !matchesResponseFormat(value, fieldContract.Format) {
+					if _, recorded := formatMismatchByField[rendered]; !recorded {
+						formatMismatchByField[rendered] = responseFormatMismatch{Field: rendered, Expected: fieldContract.Format, Actual: "invalid"}
+					}
+				}
+				if constrained && len(fieldContract.Enum) > 0 && !matchesResponseEnum(value, fieldContract.Enum) {
+					if _, recorded := valueMismatchByField[rendered]; !recorded {
+						valueMismatchByField[rendered] = responseValueMismatch{Field: rendered, Expected: append([]string(nil), fieldContract.Enum...), Actual: "invalid"}
+					}
+				}
 				continue
 			}
 			if _, recorded := mismatchByField[rendered]; !recorded {
@@ -137,6 +166,9 @@ func validateOutputContract(command registry.Command, data map[string]any, selec
 			if !constrained {
 				continue
 			}
+			if value == nil && fieldContract.Nullable {
+				continue
+			}
 			if !matchesResponseType(value, fieldContract.Type) {
 				if _, recorded := mismatchByField[rendered]; !recorded {
 					mismatchByField[rendered] = responseTypeMismatch{Field: rendered, Expected: fieldContract.Type, Actual: responseValueType(value)}
@@ -146,6 +178,11 @@ func validateOutputContract(command registry.Command, data map[string]any, selec
 			if fieldContract.Format != "" && !matchesResponseFormat(value, fieldContract.Format) {
 				if _, recorded := formatMismatchByField[rendered]; !recorded {
 					formatMismatchByField[rendered] = responseFormatMismatch{Field: rendered, Expected: fieldContract.Format, Actual: "invalid"}
+				}
+			}
+			if len(fieldContract.Enum) > 0 && !matchesResponseEnum(value, fieldContract.Enum) {
+				if _, recorded := valueMismatchByField[rendered]; !recorded {
+					valueMismatchByField[rendered] = responseValueMismatch{Field: rendered, Expected: append([]string(nil), fieldContract.Enum...), Actual: "invalid"}
 				}
 			}
 		}
@@ -178,10 +215,15 @@ func validateOutputContract(command registry.Command, data map[string]any, selec
 		formatMismatches = append(formatMismatches, mismatch)
 	}
 	sort.Slice(formatMismatches, func(i, j int) bool { return formatMismatches[i].Field < formatMismatches[j].Field })
-	if len(missing) == 0 && len(mismatches) == 0 && len(formatMismatches) == 0 {
+	valueMismatches := make([]responseValueMismatch, 0, len(valueMismatchByField))
+	for _, mismatch := range valueMismatchByField {
+		valueMismatches = append(valueMismatches, mismatch)
+	}
+	sort.Slice(valueMismatches, func(i, j int) bool { return valueMismatches[i].Field < valueMismatches[j].Field })
+	if len(missing) == 0 && len(mismatches) == 0 && len(formatMismatches) == 0 && len(valueMismatches) == 0 {
 		return nil
 	}
-	return &responseContractError{MissingFields: missing, TypeMismatches: mismatches, FormatMismatches: formatMismatches}
+	return &responseContractError{MissingFields: missing, TypeMismatches: mismatches, FormatMismatches: formatMismatches, ValueMismatches: valueMismatches}
 }
 
 func validateCursorAliases(schema registry.ResponseSchema, data map[string]any) error {
@@ -204,6 +246,17 @@ func validateCursorAliases(schema registry.ResponseSchema, data map[string]any) 
 	}
 	sort.Strings(unexpected)
 	return &responseContractError{MissingFields: []string{schema.CursorField}, UnexpectedFields: unexpected}
+}
+
+func validateRequiredCursorPresence(schema registry.ResponseSchema, data map[string]any) error {
+	if !schema.RequireCursorPresence || schema.CursorField == "" {
+		return nil
+	}
+	value, exists := data[schema.CursorField]
+	if exists && value != nil {
+		return nil
+	}
+	return &responseContractError{MissingFields: []string{schema.CursorField}}
 }
 
 func responsePathValues(value any, segments []string) ([]any, bool) {
@@ -269,9 +322,61 @@ func matchesResponseFormat(value any, expected string) bool {
 			return false
 		}
 		return matchesRFC3339(raw)
+	case "fixed-point-count":
+		raw, ok := value.(string)
+		return ok && matchesFixedPoint(raw, 2, true)
+	case "fixed-point-dollars":
+		raw, ok := value.(string)
+		return ok && matchesFixedPoint(raw, 6, false)
 	default:
 		return false
 	}
+}
+
+func matchesResponseEnum(value any, allowed []string) bool {
+	raw, ok := value.(string)
+	if !ok {
+		return false
+	}
+	for _, candidate := range allowed {
+		if raw == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesFixedPoint(raw string, decimalPlaces int, exact bool) bool {
+	if raw == "" || raw[0] == '+' {
+		return false
+	}
+	if raw[0] == '-' {
+		raw = raw[1:]
+		if raw == "" {
+			return false
+		}
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) > 2 || parts[0] == "" {
+		return false
+	}
+	for _, r := range parts[0] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	if len(parts) == 1 {
+		return !exact
+	}
+	if parts[1] == "" || len(parts[1]) > decimalPlaces || (exact && len(parts[1]) != decimalPlaces) {
+		return false
+	}
+	for _, r := range parts[1] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func matchesRFC3339(raw string) bool {
@@ -330,6 +435,9 @@ func upstreamSchemaProblem(command registry.Command, err error, retry *contract.
 		}
 		if len(contractErr.FormatMismatches) > 0 {
 			details["format_mismatches"] = contractErr.FormatMismatches
+		}
+		if len(contractErr.ValueMismatches) > 0 {
+			details["value_mismatches"] = contractErr.ValueMismatches
 		}
 		if len(contractErr.UnexpectedFields) > 0 {
 			details["unexpected_fields"] = contractErr.UnexpectedFields

@@ -1,6 +1,6 @@
 ---
 name: kalshi-cli
-description: Use the local kalshi CLI for bounded Kalshi series and market research, portfolio reads, order reconciliation, and explicitly confirmed demo or production order operations.
+description: Use the local kalshi CLI for bounded Kalshi series and market research, keyword discovery, fixed-point portfolio and candlestick reads, order reconciliation, and explicitly confirmed demo or production order operations.
 ---
 
 # Kalshi CLI
@@ -16,6 +16,15 @@ Use the compiled `kalshi` binary or `go run ./cmd/kalshi` from this repository.
 5. Set explicit `--max-pages`, `--max-items`, and `--max-bytes` when the defaults do not fit the task. Never emulate an unbounded `--all` loop.
 6. Parse `schema_version`, `output_contract_version`, `ok`, stable `error.code`, `effect`, and `meta.truncation`. Do not scrape prose.
 7. Treat a non-empty `meta.pagination.next_cursor` plus truncation reasons as an explicit continuation decision.
+
+`markets.search` is a bounded local substring match over documented `/markets`
+pages, not an upstream full-text or relevance-ranked search. A zero-match result
+is complete only when its cursor is empty and truncation is false.
+
+`portfolio.pnl` exposes Kalshi's upstream-reported realized P&L, exposure, and
+fees. It does not estimate unrealized P&L, subtract fees, or combine market and
+event aggregates. Current and archived candlesticks have separate commands and
+field contracts; do not substitute one when the other returns not found.
 
 ## Authentication
 
@@ -42,7 +51,11 @@ Prefer compact JSON for model consumption. Use NDJSON only for external line-ori
 
 Projection happens before sanitization and byte accounting. If the result still exceeds `--max-bytes`, the command fails atomically with `OUTPUT_LIMIT`; add or narrow fields, or increase the cap. Never treat an output-limit error as a partial page or continue from a cursor copied from error text.
 
-Required response fields are validated before projection. Treat `UPSTREAM_SCHEMA_MISMATCH` as a contract failure, inspect `error.details.missing_fields`, `type_mismatches`, `format_mismatches`, and `unexpected_fields`, and do not guess a renamed field. Optional fields selected only with `--fields` are emitted as `null` when absent; use `--require-fields` whenever `null` would make the task fail later.
+Commands may declare `x-default-fields` for their canonical v1 view. An
+explicit `--fields` overrides that default; continue to use `--require-fields`
+for every optional value the task cannot proceed without.
+
+Required response fields are validated before projection. Treat `UPSTREAM_SCHEMA_MISMATCH` as a contract failure, inspect `error.details.missing_fields`, `type_mismatches`, `format_mismatches`, `value_mismatches`, and `unexpected_fields`, and do not guess a renamed field. Optional fields selected only with `--fields` are emitted as `null` when absent; use `--require-fields` whenever `null` would make the task fail later.
 
 Branch on stable error codes and exit categories documented in `README.md`. A network error is retryable only for reads. Writes are never automatically retried.
 

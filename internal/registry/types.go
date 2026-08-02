@@ -35,24 +35,27 @@ type Schema struct {
 }
 
 type ResponseField struct {
-	Type        string `json:"type"`
-	Format      string `json:"format,omitempty"`
-	Description string `json:"description,omitempty"`
+	Type        string   `json:"type"`
+	Format      string   `json:"format,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+	Nullable    bool     `json:"x-nullable,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
 
 type ResponseSchema struct {
-	Dialect              string                   `json:"$schema"`
-	Type                 string                   `json:"type"`
-	AdditionalProperties bool                     `json:"additionalProperties"`
-	Properties           map[string]ResponseField `json:"properties"`
-	Required             []string                 `json:"required,omitempty"`
-	CollectionField      string                   `json:"x-collection-field,omitempty"`
-	CursorField          string                   `json:"x-cursor-field,omitempty"`
-	ProjectableFields    []string                 `json:"x-projectable-fields,omitempty"`
-	RequiredFields       []string                 `json:"x-required-fields,omitempty"`
-	RequiredFieldTypes   map[string]string        `json:"x-required-field-types,omitempty"`
-	ProjectedContracts   map[string]ResponseField `json:"x-projected-field-contracts"`
-	CursorAliases        []string                 `json:"x-cursor-aliases"`
+	Dialect               string                   `json:"$schema"`
+	Type                  string                   `json:"type"`
+	AdditionalProperties  bool                     `json:"additionalProperties"`
+	Properties            map[string]ResponseField `json:"properties"`
+	Required              []string                 `json:"required,omitempty"`
+	CollectionField       string                   `json:"x-collection-field,omitempty"`
+	CursorField           string                   `json:"x-cursor-field,omitempty"`
+	RequireCursorPresence bool                     `json:"x-require-cursor-presence,omitempty"`
+	ProjectableFields     []string                 `json:"x-projectable-fields,omitempty"`
+	RequiredFields        []string                 `json:"x-required-fields,omitempty"`
+	RequiredFieldTypes    map[string]string        `json:"x-required-field-types,omitempty"`
+	ProjectedContracts    map[string]ResponseField `json:"x-projected-field-contracts"`
+	CursorAliases         []string                 `json:"x-cursor-aliases"`
 }
 
 type Command struct {
@@ -68,7 +71,14 @@ type Command struct {
 	ResponseSchema        ResponseSchema `json:"response_schema"`
 	DocsURL               string         `json:"docs_url"`
 	Paginated             bool           `json:"x-paginated,omitempty"`
-	LocalFilter           string         `json:"x-local-filter,omitempty"`
+	LocalMatch            *LocalMatch    `json:"x-local-match,omitempty"`
+	DefaultFields         []string       `json:"x-default-fields,omitempty"`
+}
+
+type LocalMatch struct {
+	Parameter string   `json:"parameter"`
+	Mode      string   `json:"mode"`
+	Fields    []string `json:"fields"`
 }
 
 func ptr(v int64) *int64 { return &v }
@@ -115,6 +125,10 @@ func responseFieldWithFormat(kind, format, description string) ResponseField {
 	return ResponseField{Type: kind, Format: format, Description: description}
 }
 
+func nullableResponseFieldWithFormat(kind, format, description string) ResponseField {
+	return ResponseField{Type: kind, Format: format, Nullable: true, Description: description}
+}
+
 func paginatedResponse(collection string, extra map[string]ResponseField) ResponseSchema {
 	properties := map[string]ResponseField{collection: responseField("array", "Items returned by the upstream API."), "cursor": responseField("string", "Opaque next-page cursor; empty when complete.")}
 	for key, value := range extra {
@@ -139,17 +153,33 @@ func withProjectable(schema ResponseSchema, fields ...string) ResponseSchema {
 }
 
 func withRequiredStringFields(schema ResponseSchema, fields ...string) ResponseSchema {
-	schema.RequiredFields = append([]string(nil), fields...)
+	typed := make(map[string]string, len(fields))
+	for _, field := range fields {
+		typed[field] = "string"
+	}
+	return withRequiredFields(schema, typed)
+}
+
+func withRequiredFields(schema ResponseSchema, fields map[string]string) ResponseSchema {
+	schema.RequiredFields = make([]string, 0, len(fields))
+	for field := range fields {
+		schema.RequiredFields = append(schema.RequiredFields, field)
+	}
 	sort.Strings(schema.RequiredFields)
 	schema.RequiredFieldTypes = make(map[string]string, len(fields))
-	for _, field := range fields {
-		schema.RequiredFieldTypes[field] = "string"
+	for field, kind := range fields {
+		schema.RequiredFieldTypes[field] = kind
 	}
 	return schema
 }
 
 func withProjectedContracts(schema ResponseSchema, contracts map[string]ResponseField) ResponseSchema {
 	schema.ProjectedContracts = contracts
+	return schema
+}
+
+func withRequiredCursorPresence(schema ResponseSchema) ResponseSchema {
+	schema.RequireCursorPresence = true
 	return schema
 }
 
