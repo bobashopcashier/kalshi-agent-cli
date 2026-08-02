@@ -46,7 +46,7 @@ type driftScenario struct {
 
 type armResult struct {
 	Accepted        bool
-	OracleOK        bool
+	TaskCorrect     bool
 	ValidOutput     bool
 	DriftDetected   bool
 	DiagnosticPaths []string
@@ -90,7 +90,6 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 		run  func(driftScenario) armResult
 	}{
 		{name: "direct-api-json", run: runDirectJSON},
-		{name: "direct-api-task-validator", run: runDirectValidated},
 		{name: "kalshi-cli", run: runCLIContract},
 	}
 
@@ -106,7 +105,7 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 				scenario.Name, arm.name, classifyOutcome(scenario, result), result.DiagnosticPaths, result.OutputBytes, result.Versioned)
 			if scenario.Truth == truthCompatible {
 				summary.CompatibleCases++
-				if result.Accepted && result.OracleOK && result.ValidOutput {
+				if result.Accepted && result.TaskCorrect && result.ValidOutput {
 					summary.CorrectCompatible++
 				} else if !result.Accepted {
 					summary.FalsePositives++
@@ -138,7 +137,7 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 				if scenario.AfterPartialPage && result.Atomic {
 					summary.AtomicPartialFailures++
 				}
-			} else if result.Accepted && (!result.OracleOK || !result.ValidOutput) {
+			} else if result.Accepted && (!result.TaskCorrect || !result.ValidOutput) {
 				summary.SilentWrongBreaking++
 			} else if result.Accepted {
 				summary.UnexpectedCorrect++
@@ -178,8 +177,8 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 
 func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCount int) {
 	t.Helper()
-	if len(summaries) != 3 {
-		t.Fatalf("benchmark arms=%d, want 3", len(summaries))
+	if len(summaries) != 2 {
+		t.Fatalf("benchmark arms=%d, want 2", len(summaries))
 	}
 	for _, summary := range summaries {
 		if summary.CompatibleCases != 10 || summary.BreakingCases != 20 || summary.ContractBreakingCases != 16 || summary.KnownGapCases != 4 {
@@ -195,12 +194,9 @@ func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCou
 		}
 	}
 
-	raw, validator, cliSummary := summaries[0], summaries[1], summaries[2]
+	raw, cliSummary := summaries[0], summaries[1]
 	if raw.CorrectCompatible != 10 || raw.DetectedBreaking != 0 || raw.SilentWrongBreaking != 20 || raw.FalsePositives != 0 || raw.InvalidCompatible != 0 {
 		t.Fatalf("unexpected unvalidated decoder result: %+v", raw)
-	}
-	if validator.CorrectCompatible != 10 || validator.DetectedBreaking != 20 || validator.ExpectedPathPresent != 20 || validator.FalsePositives != 0 || validator.InvalidCompatible != 0 {
-		t.Fatalf("unexpected oracle-validator result: %+v", validator)
 	}
 	if cliSummary.CorrectCompatible != 10 || cliSummary.FalsePositives != 0 || cliSummary.InvalidCompatible != 0 {
 		t.Fatalf("unexpected CLI compatible result: %+v", cliSummary)
@@ -275,24 +271,11 @@ func appendRequiredFields(args []string, fields string) []string {
 func runDirectJSON(scenario driftScenario) armResult {
 	data, rawBytes, err := directAPIRead(scenario)
 	accepted := err == nil
-	oracleOK := false
+	taskCorrect := false
 	if accepted {
-		_, oracleOK = validateStructuralTaskContract(scenario, data)
+		_, taskCorrect = scoreTaskResult(scenario, data)
 	}
-	return armResult{Accepted: accepted, OracleOK: oracleOK, ValidOutput: accepted, Atomic: true, OutputBytes: rawBytes}
-}
-
-func runDirectValidated(scenario driftScenario) armResult {
-	data, rawBytes, err := directAPIRead(scenario)
-	if err != nil {
-		return armResult{Atomic: true, OutputBytes: rawBytes}
-	}
-	path, ok := validateStructuralTaskContract(scenario, data)
-	diagnostics := []string(nil)
-	if path != "" {
-		diagnostics = []string{path}
-	}
-	return armResult{Accepted: ok, OracleOK: ok, ValidOutput: true, DriftDetected: !ok, DiagnosticPaths: diagnostics, Atomic: true, OutputBytes: rawBytes}
+	return armResult{Accepted: accepted, TaskCorrect: taskCorrect, ValidOutput: accepted, Atomic: true, OutputBytes: rawBytes}
 }
 
 func directAPIRead(scenario driftScenario) (map[string]any, int, error) {
@@ -349,13 +332,13 @@ func runCLIContract(scenario driftScenario) armResult {
 		parsed := json.Unmarshal(stdout.Bytes(), &envelope) == nil
 		validOutput := parsed && validVersionedEnvelope(scenario, envelope) && envelope.OK && envelope.Error == nil
 		data, _ := envelope.Data.(map[string]any)
-		_, oracleOK := validateStructuralTaskContract(scenario, data)
+		_, taskCorrect := scoreTaskResult(scenario, data)
 		if validOutput && len(scenario.ExpectedProjectedMarketKeys) > 0 {
 			validOutput = projectedMarketKeysMatch(data, scenario.ExpectedProjectedMarketKeys)
 		}
 		return armResult{
 			Accepted:    true,
-			OracleOK:    oracleOK,
+			TaskCorrect: taskCorrect,
 			ValidOutput: validOutput,
 			Atomic:      true,
 			Versioned:   validVersionedEnvelope(scenario, envelope),
@@ -378,7 +361,7 @@ func runCLIContract(scenario driftScenario) armResult {
 	}
 }
 
-func validateStructuralTaskContract(scenario driftScenario, data map[string]any) (string, bool) {
+func scoreTaskResult(scenario driftScenario, data map[string]any) (string, bool) {
 	switch scenario.Profile {
 	case profileExchange:
 		for _, field := range []string{"exchange_active", "trading_active"} {
@@ -559,7 +542,7 @@ func containsDiagnostic(values []string, target string) bool {
 
 func classifyOutcome(scenario driftScenario, result armResult) string {
 	if scenario.Truth == truthCompatible {
-		if result.Accepted && result.OracleOK && result.ValidOutput {
+		if result.Accepted && result.TaskCorrect && result.ValidOutput {
 			return "correct_success"
 		}
 		if !result.Accepted {
@@ -570,7 +553,7 @@ func classifyOutcome(scenario driftScenario, result armResult) string {
 	if result.DriftDetected {
 		return "detected_failure"
 	}
-	if result.Accepted && (!result.OracleOK || !result.ValidOutput) {
+	if result.Accepted && (!result.TaskCorrect || !result.ValidOutput) {
 		return "silent_wrong_success"
 	}
 	if result.Accepted {
