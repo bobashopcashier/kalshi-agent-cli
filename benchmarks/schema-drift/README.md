@@ -2,9 +2,11 @@
 
 This fixed regression matrix measures whether an interface turns injected
 upstream response drift into a correct result, an explicit failure, or a
-silently wrong success. It currently covers `exchange.status`, `markets.get`,
-and `markets.list`; it is not an estimate of Kalshi's production reliability,
-an empirical agent failure rate, or the whole CLI's drift-detection rate.
+silently wrong success. It covers `events.get`, `events.list`,
+`exchange.status`, `markets.get`, `markets.list`, `orderbook.get`, `series.get`,
+`series.list`, and `trades.list`; it is not an estimate of Kalshi's production
+reliability, an empirical agent failure rate, or the whole CLI's
+drift-detection rate.
 
 Run it from the repository root:
 
@@ -26,13 +28,13 @@ extended cases that were previously known coverage gaps. Its primary unsafe
 outcome is `silent_wrong_success`: an arm
 accepts a response that fails the fixed task-correctness rules. Those rules are
 used only to score results; they are not exposed as another benchmark arm. An
-explicit schema error is a safe detection, not a completed task. This metric is a count of
-breaking cases, so **0/20 is the desired result**; it complements 20/20 explicit
-break detections. Path-presence accuracy checks
-that an error includes the expected JSON path. A two-page case verifies that a
-valid first page followed by a schema-broken second page produces no partial
-stdout. Every CLI result must use the exact expected `kalshi.agent/v1` envelope
-schema identifier and per-command `kalshi.output/.../v1` contract identifier.
+explicit schema error is a safe detection, not a completed task. This metric is
+a count of breaking cases, so **0/32 is the desired result**; it complements
+32/32 explicit break detections. Path-presence accuracy checks that an error
+includes the expected JSON path. Two multi-page cases verify that a valid first
+page followed by a schema-broken second page produces no partial stdout. Every
+CLI result must use the exact expected `kalshi.agent/v1` envelope schema
+identifier and per-command `kalshi.output/.../v1` contract identifier.
 
 The test logs every scenario-arm outcome and finishes with a
 `SCHEMA_DRIFT_BENCHMARK_JSON=` summary for machine extraction. Repeating it
@@ -46,10 +48,11 @@ network stack, or an agent. It deliberately shares the CLI's transport/parser
 to isolate the response-contract layer. The CLI arm adds its discoverable,
 versioned response-contract behavior.
 
-The matrix is hand-enumerated around the three commands' currently declared
-rules. Its contract result is a regression/conformance pass fraction, not an
-independently sampled population rate. Expand it mechanically from the registry
-before making a CLI-wide claim.
+The matrix is hand-enumerated around nine commands' currently declared rules:
+16 compatible fixtures, 28 declared contract breaks, and four historically
+extended drift cases. Its result is a regression/conformance pass fraction, not
+an independently sampled population rate. Expand it mechanically from the
+registry before making a CLI-wide claim.
 
 The current matrix verifies stable, exact v1 schema/contract/command identifiers
 but does not simulate a v1-to-v2 transition or a consumer rejecting an unknown
