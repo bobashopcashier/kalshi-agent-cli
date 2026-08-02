@@ -63,6 +63,71 @@ func TestValidateOutputContractRejectsRequiredItemTypeDrift(t *testing.T) {
 	}
 }
 
+func TestValidateOutputContractRejectsProjectedTaskFieldDriftAcrossCommands(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		command    string
+		data       map[string]any
+		fields     []string
+		wantType   string
+		wantFormat string
+	}{
+		{
+			name: "events list title type", command: "events.list",
+			data:   map[string]any{"events": []any{map[string]any{"event_ticker": "EVT", "title": 42}}},
+			fields: []string{"title"}, wantType: "events[].title",
+		},
+		{
+			name: "events get title type", command: "events.get",
+			data:   map[string]any{"event": map[string]any{"event_ticker": "EVT", "title": 42}, "markets": []any{}},
+			fields: []string{"event.title"}, wantType: "event.title",
+		},
+		{
+			name: "series list title type", command: "series.list",
+			data:   map[string]any{"series": []any{map[string]any{"ticker": "SER", "title": 42}}},
+			fields: []string{"title"}, wantType: "series[].title",
+		},
+		{
+			name: "series get title type", command: "series.get",
+			data:   map[string]any{"series": map[string]any{"ticker": "SER", "title": 42}},
+			fields: []string{"series.title"}, wantType: "series.title",
+		},
+		{
+			name: "trades ticker type", command: "trades.list",
+			data:   map[string]any{"trades": []any{map[string]any{"trade_id": "T1", "ticker": 42}}},
+			fields: []string{"ticker"}, wantType: "trades[].ticker",
+		},
+		{
+			name: "trades created time format", command: "trades.list",
+			data:   map[string]any{"trades": []any{map[string]any{"trade_id": "T1", "created_time": "tomorrow"}}},
+			fields: []string{"created_time"}, wantFormat: "trades[].created_time",
+		},
+		{
+			name: "orderbook yes levels type", command: "orderbook.get",
+			data:   map[string]any{"orderbook_fp": map[string]any{"yes_dollars": map[string]any{}}},
+			fields: []string{"orderbook_fp.yes_dollars"}, wantType: "orderbook_fp.yes_dollars",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command, ok := registry.ByName(test.command)
+			if !ok {
+				t.Fatalf("%s is not registered", test.command)
+			}
+			err := validateOutputContract(command, test.data, test.fields, test.fields)
+			var contractErr *responseContractError
+			if !errors.As(err, &contractErr) {
+				t.Fatalf("err=%T %v", err, err)
+			}
+			if test.wantType != "" && (len(contractErr.TypeMismatches) != 1 || contractErr.TypeMismatches[0].Field != test.wantType) {
+				t.Fatalf("type mismatches=%#v, want field %q", contractErr.TypeMismatches, test.wantType)
+			}
+			if test.wantFormat != "" && (len(contractErr.FormatMismatches) != 1 || contractErr.FormatMismatches[0].Field != test.wantFormat) {
+				t.Fatalf("format mismatches=%#v, want field %q", contractErr.FormatMismatches, test.wantFormat)
+			}
+		})
+	}
+}
+
 func TestValidateCursorAliasesIgnoresEmptyAliasAndRejectsNonemptyAlias(t *testing.T) {
 	command, _ := registry.ByName("markets.list")
 	if err := validateCursorAliases(command.ResponseSchema, map[string]any{"markets": []any{}, "next_cursor": ""}); err != nil {

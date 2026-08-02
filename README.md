@@ -66,24 +66,24 @@ an older package has the same contract.
 
 ### Schema-drift containment
 
-The fixed regression matrix covers 30 cases over `exchange.status`,
-`markets.get`, and `markets.list`. It is a conformance test, not an empirical
-agent failure rate or a whole-CLI estimate.
+The fixed regression matrix covers 48 cases over nine public read commands:
+event, exchange, market, orderbook, series, and trade reads. It is a conformance
+test, not an empirical agent failure rate or a whole-CLI estimate.
 
 | Arm | Compatible cases | Declared breaks detected | All breaks detected (higher is better) | Silently accepted breaks (lower is better) |
 |---|---:|---:|---:|---:|
-| Unvalidated 2xx JSON decoder | 10/10 | 0/16 | 0/20 | 20/20 |
-| `kalshi-cli` with explicit task requirements | 10/10 | **16/16** | **20/20** | **0/20** |
+| Unvalidated 2xx JSON decoder | 16/16 | 0/28 | 0/32 | 32/32 |
+| `kalshi-cli` with explicit task requirements | 16/16 | **28/28** | **32/32** | **0/32** |
 
-The last two columns measure the same 20 injected breaking responses and are
-complements: detected + silently accepted = 20. The target is therefore
-**20/20 detected and 0/20 silently accepted**.
+The last two columns measure the same 32 injected breaking responses and are
+complements: detected + silently accepted = 32. The target is therefore
+**32/32 detected and 0/32 silently accepted**.
 
-The CLI included the expected path in all 20 rejections, emitted exact v1 output
-contract identifiers in all 30 cases, and withheld a valid first page when page
-two violated the contract. The four former gaps are now covered by explicit
+The CLI included the expected path in all 32 rejections, emitted exact v1 output
+contract identifiers in all 48 cases, and withheld valid first pages in both
+later-page drift cases. The four former gaps are covered by explicit
 task-required paths, projected type/format contracts, and cursor-alias drift
-detection. The offline registry is `kalshi.registry/v2`; per-command output
+detection. The offline registry is `kalshi.registry/v3`; per-command output
 shapes remain `kalshi.output/.../v1`.
 
 Run the matrix with:

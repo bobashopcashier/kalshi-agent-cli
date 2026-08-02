@@ -1007,7 +1007,7 @@ func TestFieldsEqualsSyntaxAndRepeatedFlagHandling(t *testing.T) {
 	if code := app.Run(context.Background(), []string{"commands", "list", "--fields=registry_version", "--compact"}); code != 0 {
 		t.Fatalf("equals syntax exit=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"registry_version":"kalshi.registry/v2"`) || strings.Contains(stdout.String(), `"commands"`) {
+	if !strings.Contains(stdout.String(), `"registry_version":"kalshi.registry/v3"`) || strings.Contains(stdout.String(), `"commands"`) {
 		t.Fatalf("output=%s", stdout.String())
 	}
 
@@ -1044,7 +1044,7 @@ func TestResponseContractExtensionKeysAreStableOffline(t *testing.T) {
 	if code := app.Run(context.Background(), args); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{`"x-projectable-fields":[`, `"x-projected-field-contracts":{}`, `"x-cursor-aliases":["next_cursor"]`} {
+	for _, want := range []string{`"x-projectable-fields":[`, `"x-projected-field-contracts":{"title":{`, `"x-cursor-aliases":["next_cursor"]`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("missing %s in %s", want, stdout.String())
 		}

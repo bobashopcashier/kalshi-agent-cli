@@ -126,12 +126,12 @@ func TestSeriesCommandsExposeCurrentPublicContract(t *testing.T) {
 	}
 }
 
-func TestMarketsExposeProjectedContractsAndCursorAliases(t *testing.T) {
+func TestCommandsExposeProjectedContractsAndCursorAliases(t *testing.T) {
 	list, ok := ByName("markets.list")
 	if !ok {
 		t.Fatal("markets.list is not registered")
 	}
-	if Version != "kalshi.registry/v2" {
+	if Version != "kalshi.registry/v3" {
 		t.Fatalf("registry version=%q", Version)
 	}
 	if got := list.ResponseSchema.ProjectedContracts["title"]; got.Type != "string" || got.Format != "" {
@@ -142,6 +142,33 @@ func TestMarketsExposeProjectedContractsAndCursorAliases(t *testing.T) {
 	}
 	if len(list.ResponseSchema.CursorAliases) != 1 || list.ResponseSchema.CursorAliases[0] != "next_cursor" {
 		t.Fatalf("cursor aliases=%#v", list.ResponseSchema.CursorAliases)
+	}
+
+	for _, test := range []struct {
+		command string
+		path    string
+		typeOf  string
+		format  string
+	}{
+		{command: "events.list", path: "title", typeOf: "string"},
+		{command: "events.get", path: "event.title", typeOf: "string"},
+		{command: "series.list", path: "title", typeOf: "string"},
+		{command: "series.get", path: "series.title", typeOf: "string"},
+		{command: "trades.list", path: "ticker", typeOf: "string"},
+		{command: "trades.list", path: "created_time", typeOf: "string", format: "date-time"},
+		{command: "orderbook.get", path: "orderbook_fp.yes_dollars", typeOf: "array"},
+		{command: "orderbook.get", path: "orderbook_fp.no_dollars", typeOf: "array"},
+	} {
+		t.Run(test.command+"/"+test.path, func(t *testing.T) {
+			command, ok := ByName(test.command)
+			if !ok {
+				t.Fatalf("%s is not registered", test.command)
+			}
+			got := command.ResponseSchema.ProjectedContracts[test.path]
+			if got.Type != test.typeOf || got.Format != test.format {
+				t.Fatalf("contract=%#v, want type=%q format=%q", got, test.typeOf, test.format)
+			}
+		})
 	}
 }
 

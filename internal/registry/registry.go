@@ -3,7 +3,7 @@ package registry
 import "sort"
 
 const (
-	Version              = "kalshi.registry/v2"
+	Version              = "kalshi.registry/v3"
 	commandSchemaVersion = "kalshi.command/v1"
 	tickerPattern        = `^[A-Z0-9][A-Z0-9._-]{0,127}$`
 	idPattern            = `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`
@@ -92,7 +92,9 @@ var commands = []Command{
 			"tickers":             withPattern(str("query", "Comma-separated event tickers."), `^[A-Z0-9._,-]{1,2048}$`),
 			"min_close_ts":        integer("query", "Minimum close Unix timestamp in seconds.", 0, 4102444800),
 			"min_updated_ts":      integer("query", "Minimum metadata update Unix timestamp in seconds.", 0, 4102444800),
-		}), ResponseSchema: withRequiredStringFields(withProjectable(paginatedResponse("events", map[string]ResponseField{"milestones": responseField("array", "Optional related milestones.")}), eventProjectableFields...), "event_ticker"), DocsURL: "https://docs.kalshi.com/api-reference/events/get-events",
+		}), ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(paginatedResponse("events", map[string]ResponseField{"milestones": responseField("array", "Optional related milestones.")}), eventProjectableFields...), "event_ticker"), map[string]ResponseField{
+			"title": responseField("string", "Event title when supplied by Kalshi."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/events/get-events",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "events.get", CLIPath: []string{"events", "get"},
@@ -100,7 +102,9 @@ var commands = []Command{
 		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
 			"event_ticker":        withPattern(str("path", "Event ticker."), tickerPattern),
 			"with_nested_markets": boolean("query", "Include live-tier nested markets."),
-		}, "event_ticker"), ResponseSchema: withRequiredStringFields(withProjectable(responseObject(map[string]ResponseField{"event": responseField("object", "Event object."), "markets": responseField("array", "Associated markets; deprecated in favor of nested markets.")}, "event", "markets"), append(prefixedFields("event", eventProjectableFields), prefixedFields("markets", marketProjectableFields)...)...), "event.event_ticker"), DocsURL: "https://docs.kalshi.com/api-reference/events/get-event",
+		}, "event_ticker"), ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(responseObject(map[string]ResponseField{"event": responseField("object", "Event object."), "markets": responseField("array", "Associated markets; deprecated in favor of nested markets.")}, "event", "markets"), append(prefixedFields("event", eventProjectableFields), prefixedFields("markets", marketProjectableFields)...)...), "event.event_ticker"), map[string]ResponseField{
+			"event.title": responseField("string", "Event title when supplied by Kalshi."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/events/get-event",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "series.list", CLIPath: []string{"series", "list"},
@@ -111,7 +115,9 @@ var commands = []Command{
 			"include_product_metadata": boolean("query", "Include product metadata."),
 			"include_volume":           boolean("query", "Include cumulative volume_fp for each series."),
 			"min_updated_ts":           integer("query", "Filter series with metadata updated after this Unix timestamp in seconds.", 0, 4102444800),
-		}), ResponseSchema: withRequiredStringFields(withProjectable(collectionResponse("series"), seriesProjectableFields...), "ticker"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-series-list",
+		}), ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(collectionResponse("series"), seriesProjectableFields...), "ticker"), map[string]ResponseField{
+			"title": responseField("string", "Series title when supplied by Kalshi."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/market/get-series-list",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "series.get", CLIPath: []string{"series", "get"},
@@ -119,7 +125,9 @@ var commands = []Command{
 		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
 			"series_ticker":  withPattern(str("path", "Series ticker."), tickerPattern),
 			"include_volume": boolean("query", "Include cumulative volume_fp for the series."),
-		}, "series_ticker"), ResponseSchema: withRequiredStringFields(withProjectable(responseObject(map[string]ResponseField{"series": responseField("object", "Series object.")}, "series"), prefixedFields("series", seriesProjectableFields)...), "series.ticker"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-series",
+		}, "series_ticker"), ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(responseObject(map[string]ResponseField{"series": responseField("object", "Series object.")}, "series"), prefixedFields("series", seriesProjectableFields)...), "series.ticker"), map[string]ResponseField{
+			"series.title": responseField("string", "Series title when supplied by Kalshi."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/market/get-series",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "orderbook.get", CLIPath: []string{"orderbook", "get"},
@@ -127,7 +135,10 @@ var commands = []Command{
 		Effect: Effect{Class: "read", Network: true, AuthOptional: true}, ParamsSchema: objectSchema(map[string]Field{
 			"ticker": withPattern(str("path", "Market ticker."), tickerPattern),
 			"depth":  integer("query", "Orderbook depth; 0 means all levels.", 0, 100),
-		}, "ticker"), ResponseSchema: withProjectable(responseObject(map[string]ResponseField{"orderbook_fp": responseField("object", "Fixed-point YES and NO bid levels.")}, "orderbook_fp"), "orderbook_fp", "orderbook_fp.yes_dollars", "orderbook_fp.no_dollars"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market-orderbook",
+		}, "ticker"), ResponseSchema: withProjectedContracts(withProjectable(responseObject(map[string]ResponseField{"orderbook_fp": responseField("object", "Fixed-point YES and NO bid levels.")}, "orderbook_fp"), "orderbook_fp", "orderbook_fp.yes_dollars", "orderbook_fp.no_dollars"), map[string]ResponseField{
+			"orderbook_fp.yes_dollars": responseField("array", "Fixed-point YES bid levels."),
+			"orderbook_fp.no_dollars":  responseField("array", "Fixed-point NO bid levels."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market-orderbook",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "trades.list", CLIPath: []string{"trades", "list"},
@@ -140,7 +151,10 @@ var commands = []Command{
 			"min_ts":         integer("query", "Minimum trade Unix timestamp.", 0, 4102444800),
 			"max_ts":         integer("query", "Maximum trade Unix timestamp.", 0, 4102444800),
 			"is_block_trade": boolean("query", "Filter by block-trade status."),
-		}), ResponseSchema: withRequiredStringFields(withProjectable(paginatedResponse("trades", nil), tradeProjectableFields...), "trade_id"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-trades",
+		}), ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(paginatedResponse("trades", nil), tradeProjectableFields...), "trade_id"), map[string]ResponseField{
+			"ticker":       responseField("string", "Market ticker for the trade."),
+			"created_time": responseFieldWithFormat("string", "date-time", "RFC 3339 trade creation time."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/market/get-trades",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "portfolio.balance", CLIPath: []string{"portfolio", "balance"},

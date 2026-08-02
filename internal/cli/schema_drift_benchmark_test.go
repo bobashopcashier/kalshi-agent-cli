@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
-	"time"
 
 	"kalshi-cli/internal/api"
 	"kalshi-cli/internal/contract"
+	"kalshi-cli/internal/registry"
 )
 
 type driftTruth string
@@ -22,31 +24,76 @@ const (
 type driftProfile string
 
 const (
-	profileExchange    driftProfile = "exchange.status"
-	profileMarketsList driftProfile = "markets.list"
-	profileMarketsGet  driftProfile = "markets.get"
+	profileEventsGet    driftProfile = "events.get"
+	profileEventsList   driftProfile = "events.list"
+	profileExchange     driftProfile = "exchange.status"
+	profileMarketsList  driftProfile = "markets.list"
+	profileMarketsGet   driftProfile = "markets.get"
+	profileOrderbookGet driftProfile = "orderbook.get"
+	profileSeriesGet    driftProfile = "series.get"
+	profileSeriesList   driftProfile = "series.list"
+	profileTradesList   driftProfile = "trades.list"
 )
 
+type taskField struct {
+	Path   string
+	Type   string
+	Format string
+}
+
+type driftTaskProfile struct {
+	RequiredFields []taskField
+}
+
+var driftTaskProfiles = map[driftProfile]driftTaskProfile{
+	profileEventsGet: {
+		RequiredFields: []taskField{{Path: "event", Type: "object"}, {Path: "event.event_ticker", Type: "string"}},
+	},
+	profileEventsList: {
+		RequiredFields: []taskField{{Path: "event_ticker", Type: "string"}},
+	},
+	profileExchange: {
+		RequiredFields: []taskField{{Path: "exchange_active", Type: "boolean"}, {Path: "trading_active", Type: "boolean"}},
+	},
+	profileMarketsGet: {
+		RequiredFields: []taskField{{Path: "market", Type: "object"}, {Path: "market.ticker", Type: "string"}},
+	},
+	profileMarketsList: {
+		RequiredFields: []taskField{{Path: "ticker", Type: "string"}},
+	},
+	profileOrderbookGet: {
+		RequiredFields: []taskField{{Path: "orderbook_fp", Type: "object"}},
+	},
+	profileSeriesGet: {
+		RequiredFields: []taskField{{Path: "series", Type: "object"}, {Path: "series.ticker", Type: "string"}},
+	},
+	profileSeriesList: {
+		RequiredFields: []taskField{{Path: "ticker", Type: "string"}},
+	},
+	profileTradesList: {
+		RequiredFields: []taskField{{Path: "trade_id", Type: "string"}},
+	},
+}
+
 type driftScenario struct {
-	Name                        string
-	Mutation                    string
-	Truth                       driftTruth
-	Profile                     driftProfile
-	Body                        string
-	Bodies                      []string
-	Args                        []string
-	ExpectedPath                string
-	ExpectedProjectedMarketKeys []string
-	RequireTitle                bool
-	RequireCloseRFC3339         bool
-	RequireNextPage             bool
-	KnownGap                    bool
-	AfterPartialPage            bool
+	Name                      string
+	Mutation                  string
+	Truth                     driftTruth
+	Profile                   driftProfile
+	Body                      string
+	Bodies                    []string
+	Args                      []string
+	ExpectedPath              string
+	ExpectedProjectedItemKeys []string
+	TaskFields                []taskField
+	RequireNextPage           bool
+	KnownGap                  bool
+	AfterPartialPage          bool
 }
 
 type armResult struct {
 	Accepted        bool
-	OracleOK        bool
+	TaskCorrect     bool
 	ValidOutput     bool
 	DriftDetected   bool
 	DiagnosticPaths []string
@@ -90,7 +137,6 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 		run  func(driftScenario) armResult
 	}{
 		{name: "direct-api-json", run: runDirectJSON},
-		{name: "direct-api-task-validator", run: runDirectValidated},
 		{name: "kalshi-cli", run: runCLIContract},
 	}
 
@@ -106,7 +152,7 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 				scenario.Name, arm.name, classifyOutcome(scenario, result), result.DiagnosticPaths, result.OutputBytes, result.Versioned)
 			if scenario.Truth == truthCompatible {
 				summary.CompatibleCases++
-				if result.Accepted && result.OracleOK && result.ValidOutput {
+				if result.Accepted && result.TaskCorrect && result.ValidOutput {
 					summary.CorrectCompatible++
 				} else if !result.Accepted {
 					summary.FalsePositives++
@@ -138,7 +184,7 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 				if scenario.AfterPartialPage && result.Atomic {
 					summary.AtomicPartialFailures++
 				}
-			} else if result.Accepted && (!result.OracleOK || !result.ValidOutput) {
+			} else if result.Accepted && (!result.TaskCorrect || !result.ValidOutput) {
 				summary.SilentWrongBreaking++
 			} else if result.Accepted {
 				summary.UnexpectedCorrect++
@@ -178,11 +224,11 @@ func TestSchemaDriftBenchmark(t *testing.T) {
 
 func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCount int) {
 	t.Helper()
-	if len(summaries) != 3 {
-		t.Fatalf("benchmark arms=%d, want 3", len(summaries))
+	if len(summaries) != 2 {
+		t.Fatalf("benchmark arms=%d, want 2", len(summaries))
 	}
 	for _, summary := range summaries {
-		if summary.CompatibleCases != 10 || summary.BreakingCases != 20 || summary.ContractBreakingCases != 16 || summary.KnownGapCases != 4 {
+		if summary.CompatibleCases != 16 || summary.BreakingCases != 32 || summary.ContractBreakingCases != 28 || summary.KnownGapCases != 4 {
 			t.Fatalf("arm=%s unexpected corpus partition: %+v", summary.Arm, summary)
 		}
 		compatiblePartition := summary.CorrectCompatible + summary.FalsePositives + summary.InvalidCompatible
@@ -195,14 +241,11 @@ func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCou
 		}
 	}
 
-	raw, validator, cliSummary := summaries[0], summaries[1], summaries[2]
-	if raw.CorrectCompatible != 10 || raw.DetectedBreaking != 0 || raw.SilentWrongBreaking != 20 || raw.FalsePositives != 0 || raw.InvalidCompatible != 0 {
+	raw, cliSummary := summaries[0], summaries[1]
+	if raw.CorrectCompatible != 16 || raw.DetectedBreaking != 0 || raw.SilentWrongBreaking != 32 || raw.FalsePositives != 0 || raw.InvalidCompatible != 0 {
 		t.Fatalf("unexpected unvalidated decoder result: %+v", raw)
 	}
-	if validator.CorrectCompatible != 10 || validator.DetectedBreaking != 20 || validator.ExpectedPathPresent != 20 || validator.FalsePositives != 0 || validator.InvalidCompatible != 0 {
-		t.Fatalf("unexpected oracle-validator result: %+v", validator)
-	}
-	if cliSummary.CorrectCompatible != 10 || cliSummary.FalsePositives != 0 || cliSummary.InvalidCompatible != 0 {
+	if cliSummary.CorrectCompatible != 16 || cliSummary.FalsePositives != 0 || cliSummary.InvalidCompatible != 0 {
 		t.Fatalf("unexpected CLI compatible result: %+v", cliSummary)
 	}
 	if cliSummary.DetectedContractBreaks != cliSummary.ContractBreakingCases || cliSummary.OtherBreakingFailures != 0 || cliSummary.UnexpectedCorrect != 0 {
@@ -214,7 +257,7 @@ func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCou
 	if cliSummary.ExpectedPathPresent != cliSummary.DetectedBreaking {
 		t.Fatalf("CLI expected-path presence=%d/%d", cliSummary.ExpectedPathPresent, cliSummary.DetectedBreaking)
 	}
-	if cliSummary.AtomicPartialFailures != cliSummary.PartialPageBreaks || cliSummary.PartialPageBreaks != 1 {
+	if cliSummary.AtomicPartialFailures != cliSummary.PartialPageBreaks || cliSummary.PartialPageBreaks != 2 {
 		t.Fatalf("CLI atomic partial-page failures=%d/%d", cliSummary.AtomicPartialFailures, cliSummary.PartialPageBreaks)
 	}
 	if cliSummary.VersionedOutputs != scenarioCount {
@@ -223,20 +266,32 @@ func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCou
 }
 
 func schemaDriftScenarios() []driftScenario {
+	eventsList := []string{"events", "list", "--max-pages", "2", "--max-items", "10", "--compact"}
+	eventsGet := []string{"events", "get", "--event-ticker", "EVT", "--compact"}
 	marketList := []string{"markets", "list", "--max-pages", "2", "--max-items", "10", "--compact"}
 	marketGet := []string{"markets", "get", "--ticker", "A", "--compact"}
+	orderbookGet := []string{"orderbook", "get", "--ticker", "A", "--compact"}
+	seriesList := []string{"series", "list", "--compact"}
+	seriesGet := []string{"series", "get", "--series-ticker", "SER", "--compact"}
+	tradesList := []string{"trades", "list", "--max-pages", "2", "--max-items", "10", "--compact"}
 	exchange := []string{"exchange", "status", "--compact"}
 	return []driftScenario{
 		{Name: "markets-valid", Mutation: "none", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha"}],"cursor":""}`, Args: marketList},
 		{Name: "markets-additive-field", Mutation: "add optional field", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: marketList},
-		{Name: "markets-additive-field-projected", Mutation: "add field outside requested projection", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedProjectedMarketKeys: []string{"ticker", "title"}},
+		{Name: "markets-additive-field-projected", Mutation: "add field outside requested projection", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedProjectedItemKeys: []string{"ticker", "title"}, TaskFields: []taskField{{Path: "title", Type: "string"}}},
 		{Name: "markets-key-reorder", Mutation: "reorder keys", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"cursor":"","markets":[{"title":"Alpha","ticker":"A"}]}`, Args: marketList},
 		{Name: "markets-empty", Mutation: "empty collection", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[],"cursor":""}`, Args: marketList},
 		{Name: "markets-cursor-null", Mutation: "terminal cursor null", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"cursor":null}`, Args: marketList},
 		{Name: "markets-cursor-absent-terminal", Mutation: "terminal cursor absent", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}]}`, Args: marketList},
-		{Name: "markets-close-time-valid", Mutation: "valid same-type semantic value", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"2026-08-01T12:00:00Z"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,close_time"), "close_time"), RequireCloseRFC3339: true},
+		{Name: "markets-close-time-valid", Mutation: "valid same-type semantic value", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"2026-08-01T12:00:00Z"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,close_time"), "close_time"), TaskFields: []taskField{{Path: "close_time", Type: "string", Format: "date-time"}}},
 		{Name: "market-get-valid", Mutation: "none", Truth: truthCompatible, Profile: profileMarketsGet, Body: `{"market":{"ticker":"A","title":"Alpha"}}`, Args: marketGet},
 		{Name: "exchange-valid", Mutation: "none", Truth: truthCompatible, Profile: profileExchange, Body: `{"exchange_active":true,"trading_active":true}`, Args: exchange},
+		{Name: "events-list-valid", Mutation: "project event identity and title with additive fields", Truth: truthCompatible, Profile: profileEventsList, Body: `{"cursor":"","events":[{"title":"Event","event_ticker":"EVT","new_field":true}],"new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(eventsList, "event_ticker,title"), "title"), ExpectedProjectedItemKeys: []string{"event_ticker", "title"}, TaskFields: []taskField{{Path: "title", Type: "string"}}},
+		{Name: "events-get-valid", Mutation: "project one event with additive fields", Truth: truthCompatible, Profile: profileEventsGet, Body: `{"event":{"event_ticker":"EVT","title":"Event","new_field":true},"markets":[],"new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(eventsGet, "event.event_ticker,event.title"), "event.title"), TaskFields: []taskField{{Path: "event.title", Type: "string"}}},
+		{Name: "series-list-valid", Mutation: "project series identity and title with additive fields", Truth: truthCompatible, Profile: profileSeriesList, Body: `{"series":[{"title":"Series","ticker":"SER","new_field":true}],"new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(seriesList, "ticker,title"), "title"), ExpectedProjectedItemKeys: []string{"ticker", "title"}, TaskFields: []taskField{{Path: "title", Type: "string"}}},
+		{Name: "series-get-valid", Mutation: "project one series with additive fields", Truth: truthCompatible, Profile: profileSeriesGet, Body: `{"series":{"ticker":"SER","title":"Series","new_field":true},"new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(seriesGet, "series.ticker,series.title"), "series.title"), TaskFields: []taskField{{Path: "series.title", Type: "string"}}},
+		{Name: "trades-list-valid", Mutation: "project trade identity ticker and timestamp", Truth: truthCompatible, Profile: profileTradesList, Body: `{"trades":[{"trade_id":"T1","ticker":"A","created_time":"2026-08-01T12:00:00Z","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(tradesList, "trade_id,ticker,created_time"), "ticker,created_time"), ExpectedProjectedItemKeys: []string{"created_time", "ticker", "trade_id"}, TaskFields: []taskField{{Path: "ticker", Type: "string"}, {Path: "created_time", Type: "string", Format: "date-time"}}},
+		{Name: "orderbook-valid", Mutation: "project required YES and NO levels", Truth: truthCompatible, Profile: profileOrderbookGet, Body: `{"orderbook_fp":{"yes_dollars":[["0.4000","10.00"]],"no_dollars":[],"new_field":true},"new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(orderbookGet, "orderbook_fp.yes_dollars,orderbook_fp.no_dollars"), "orderbook_fp.yes_dollars,orderbook_fp.no_dollars"), TaskFields: []taskField{{Path: "orderbook_fp.yes_dollars", Type: "array"}, {Path: "orderbook_fp.no_dollars", Type: "array"}}},
 
 		{Name: "markets-wrapper-missing", Mutation: "remove required wrapper", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"cursor":""}`, Args: marketList, ExpectedPath: "markets"},
 		{Name: "markets-wrapper-wrong-type", Mutation: "change wrapper type", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":{},"cursor":""}`, Args: marketList, ExpectedPath: "markets"},
@@ -254,11 +309,23 @@ func schemaDriftScenarios() []driftScenario {
 		{Name: "exchange-field-null", Mutation: "set required scalar null", Truth: truthBreaking, Profile: profileExchange, Body: `{"exchange_active":true,"trading_active":null}`, Args: exchange, ExpectedPath: "trading_active"},
 		{Name: "exchange-field-string", Mutation: "change required scalar type", Truth: truthBreaking, Profile: profileExchange, Body: `{"exchange_active":"yes","trading_active":true}`, Args: exchange, ExpectedPath: "exchange_active"},
 		{Name: "markets-page-two-ticker-missing", Mutation: "remove required item field after a valid page", Truth: truthBreaking, Profile: profileMarketsList, Bodies: []string{`{"markets":[{"ticker":"A"}],"cursor":"page-2"}`, `{"markets":[{"title":"Beta"}],"cursor":""}`}, Args: marketList, ExpectedPath: "markets[].ticker", AfterPartialPage: true},
+		{Name: "events-list-identity-number", Mutation: "change event identity type", Truth: truthBreaking, Profile: profileEventsList, Body: `{"events":[{"event_ticker":42,"title":"Event"}],"cursor":""}`, Args: eventsList, ExpectedPath: "events[].event_ticker"},
+		{Name: "events-list-title-missing", Mutation: "remove task-required event title", Truth: truthBreaking, Profile: profileEventsList, Body: `{"events":[{"event_ticker":"EVT"}],"cursor":""}`, Args: appendRequiredFields(appendFields(eventsList, "event_ticker,title"), "title"), ExpectedPath: "events[].title", TaskFields: []taskField{{Path: "title", Type: "string"}}},
+		{Name: "events-get-wrapper-missing", Mutation: "remove event wrapper", Truth: truthBreaking, Profile: profileEventsGet, Body: `{"markets":[]}`, Args: eventsGet, ExpectedPath: "event"},
+		{Name: "events-get-title-number", Mutation: "change projected event title type", Truth: truthBreaking, Profile: profileEventsGet, Body: `{"event":{"event_ticker":"EVT","title":42},"markets":[]}`, Args: appendRequiredFields(appendFields(eventsGet, "event.event_ticker,event.title"), "event.title"), ExpectedPath: "event.title", TaskFields: []taskField{{Path: "event.title", Type: "string"}}},
+		{Name: "series-list-wrapper-missing", Mutation: "remove series collection", Truth: truthBreaking, Profile: profileSeriesList, Body: `{}`, Args: seriesList, ExpectedPath: "series"},
+		{Name: "series-list-title-missing", Mutation: "remove task-required title from one series", Truth: truthBreaking, Profile: profileSeriesList, Body: `{"series":[{"ticker":"SER-A","title":"Series A"},{"ticker":"SER-B"}]}`, Args: appendRequiredFields(appendFields(seriesList, "ticker,title"), "title"), ExpectedPath: "series[].title", TaskFields: []taskField{{Path: "title", Type: "string"}}},
+		{Name: "series-get-wrapper-array", Mutation: "change series wrapper type", Truth: truthBreaking, Profile: profileSeriesGet, Body: `{"series":[]}`, Args: seriesGet, ExpectedPath: "series"},
+		{Name: "series-get-identity-missing", Mutation: "remove series identity", Truth: truthBreaking, Profile: profileSeriesGet, Body: `{"series":{"title":"Series"}}`, Args: seriesGet, ExpectedPath: "series.ticker"},
+		{Name: "trades-list-created-time-format", Mutation: "break projected trade timestamp semantics", Truth: truthBreaking, Profile: profileTradesList, Body: `{"trades":[{"trade_id":"T1","ticker":"A","created_time":"tomorrow"}],"cursor":""}`, Args: appendRequiredFields(appendFields(tradesList, "trade_id,ticker,created_time"), "ticker,created_time"), ExpectedPath: "trades[].created_time", TaskFields: []taskField{{Path: "ticker", Type: "string"}, {Path: "created_time", Type: "string", Format: "date-time"}}},
+		{Name: "trades-page-two-identity-missing", Mutation: "remove trade identity after a valid page", Truth: truthBreaking, Profile: profileTradesList, Bodies: []string{`{"trades":[{"trade_id":"T1","ticker":"A","created_time":"2026-08-01T12:00:00Z"}],"cursor":"page-2"}`, `{"trades":[{"ticker":"B","created_time":"2026-08-01T12:01:00Z"}],"cursor":""}`}, Args: appendRequiredFields(appendFields(tradesList, "trade_id,ticker,created_time"), "ticker,created_time"), ExpectedPath: "trades[].trade_id", TaskFields: []taskField{{Path: "ticker", Type: "string"}, {Path: "created_time", Type: "string", Format: "date-time"}}, AfterPartialPage: true},
+		{Name: "orderbook-wrapper-null", Mutation: "set orderbook wrapper null", Truth: truthBreaking, Profile: profileOrderbookGet, Body: `{"orderbook_fp":null}`, Args: orderbookGet, ExpectedPath: "orderbook_fp"},
+		{Name: "orderbook-yes-wrong-type", Mutation: "change projected YES levels type", Truth: truthBreaking, Profile: profileOrderbookGet, Body: `{"orderbook_fp":{"yes_dollars":{},"no_dollars":[]}}`, Args: appendRequiredFields(appendFields(orderbookGet, "orderbook_fp.yes_dollars,orderbook_fp.no_dollars"), "orderbook_fp.yes_dollars,orderbook_fp.no_dollars"), ExpectedPath: "orderbook_fp.yes_dollars", TaskFields: []taskField{{Path: "orderbook_fp.yes_dollars", Type: "array"}, {Path: "orderbook_fp.no_dollars", Type: "array"}}},
 
-		{Name: "markets-title-missing", Mutation: "remove task-required optional field", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedPath: "markets[].title", RequireTitle: true, KnownGap: true},
-		{Name: "markets-title-number", Mutation: "change task-required optional type", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":42}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedPath: "markets[].title", RequireTitle: true, KnownGap: true},
+		{Name: "markets-title-missing", Mutation: "remove task-required optional field", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedPath: "markets[].title", TaskFields: []taskField{{Path: "title", Type: "string"}}, KnownGap: true},
+		{Name: "markets-title-number", Mutation: "change task-required optional type", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":42}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedPath: "markets[].title", TaskFields: []taskField{{Path: "title", Type: "string"}}, KnownGap: true},
 		{Name: "markets-cursor-renamed-with-more-pages", Mutation: "rename continuation cursor", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"next_cursor":"page-2"}`, Args: marketList, ExpectedPath: "cursor", RequireNextPage: true, KnownGap: true},
-		{Name: "markets-close-time-semantic-drift", Mutation: "same JSON type with invalid semantics", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"tomorrow"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,close_time"), "close_time"), ExpectedPath: "markets[].close_time", RequireCloseRFC3339: true, KnownGap: true},
+		{Name: "markets-close-time-semantic-drift", Mutation: "same JSON type with invalid semantics", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"tomorrow"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,close_time"), "close_time"), ExpectedPath: "markets[].close_time", TaskFields: []taskField{{Path: "close_time", Type: "string", Format: "date-time"}}, KnownGap: true},
 	}
 }
 
@@ -275,27 +342,20 @@ func appendRequiredFields(args []string, fields string) []string {
 func runDirectJSON(scenario driftScenario) armResult {
 	data, rawBytes, err := directAPIRead(scenario)
 	accepted := err == nil
-	oracleOK := false
+	taskCorrect := false
 	if accepted {
-		_, oracleOK = validateStructuralTaskContract(scenario, data)
+		_, taskCorrect = scoreTaskResult(scenario, data)
 	}
-	return armResult{Accepted: accepted, OracleOK: oracleOK, ValidOutput: accepted, Atomic: true, OutputBytes: rawBytes}
-}
-
-func runDirectValidated(scenario driftScenario) armResult {
-	data, rawBytes, err := directAPIRead(scenario)
-	if err != nil {
-		return armResult{Atomic: true, OutputBytes: rawBytes}
-	}
-	path, ok := validateStructuralTaskContract(scenario, data)
-	diagnostics := []string(nil)
-	if path != "" {
-		diagnostics = []string{path}
-	}
-	return armResult{Accepted: ok, OracleOK: ok, ValidOutput: true, DriftDetected: !ok, DiagnosticPaths: diagnostics, Atomic: true, OutputBytes: rawBytes}
+	return armResult{Accepted: accepted, TaskCorrect: taskCorrect, ValidOutput: accepted, Atomic: true, OutputBytes: rawBytes}
 }
 
 func directAPIRead(scenario driftScenario) (map[string]any, int, error) {
+	command, ok := registry.ByName(string(scenario.Profile))
+	if !ok {
+		return nil, 0, fmt.Errorf("benchmark profile %s is not registered", scenario.Profile)
+	}
+	collection := command.ResponseSchema.CollectionField
+	cursorField := command.ResponseSchema.CursorField
 	client := &api.Client{
 		BaseURL: "https://example.test/trade-api/v2",
 	}
@@ -310,17 +370,26 @@ func directAPIRead(scenario driftScenario) (map[string]any, int, error) {
 		if err != nil {
 			return nil, totalBytes, err
 		}
-		if combined == nil || scenario.Profile != profileMarketsList {
+		if combined == nil || collection == "" {
 			combined = page
 			continue
 		}
-		combinedMarkets, _ := combined["markets"].([]any)
-		pageMarkets, _ := page["markets"].([]any)
-		combined["markets"] = append(combinedMarkets, pageMarkets...)
-		if cursor, exists := page["cursor"]; exists {
-			combined["cursor"] = cursor
+		pageItems, pageExists := page[collection]
+		combinedItems, combinedOK := combined[collection].([]any)
+		newItems, pageOK := pageItems.([]any)
+		if !pageExists {
+			delete(combined, collection)
+		} else if combinedOK && pageOK {
+			combined[collection] = append(combinedItems, newItems...)
 		} else {
-			delete(combined, "cursor")
+			combined[collection] = pageItems
+		}
+		if cursorField != "" {
+			if cursor, exists := page[cursorField]; exists {
+				combined[cursorField] = cursor
+			} else {
+				delete(combined, cursorField)
+			}
 		}
 	}
 	return combined, totalBytes, nil
@@ -349,13 +418,14 @@ func runCLIContract(scenario driftScenario) armResult {
 		parsed := json.Unmarshal(stdout.Bytes(), &envelope) == nil
 		validOutput := parsed && validVersionedEnvelope(scenario, envelope) && envelope.OK && envelope.Error == nil
 		data, _ := envelope.Data.(map[string]any)
-		_, oracleOK := validateStructuralTaskContract(scenario, data)
-		if validOutput && len(scenario.ExpectedProjectedMarketKeys) > 0 {
-			validOutput = projectedMarketKeysMatch(data, scenario.ExpectedProjectedMarketKeys)
+		_, taskCorrect := scoreTaskResult(scenario, data)
+		if validOutput && len(scenario.ExpectedProjectedItemKeys) > 0 {
+			command, _ := registry.ByName(string(scenario.Profile))
+			validOutput = projectedItemKeysMatch(data, command.ResponseSchema.CollectionField, scenario.ExpectedProjectedItemKeys)
 		}
 		return armResult{
 			Accepted:    true,
-			OracleOK:    oracleOK,
+			TaskCorrect: taskCorrect,
 			ValidOutput: validOutput,
 			Atomic:      true,
 			Versioned:   validVersionedEnvelope(scenario, envelope),
@@ -378,68 +448,67 @@ func runCLIContract(scenario driftScenario) armResult {
 	}
 }
 
-func validateStructuralTaskContract(scenario driftScenario, data map[string]any) (string, bool) {
-	switch scenario.Profile {
-	case profileExchange:
-		for _, field := range []string{"exchange_active", "trading_active"} {
-			value, exists := data[field]
-			if !exists || !isBool(value) {
-				return field, false
-			}
-		}
-		return "", true
-	case profileMarketsGet:
-		market, exists := data["market"]
-		if !exists || !isObject(market) {
-			return "market", false
-		}
-		obj := market.(map[string]any)
-		if ticker, exists := obj["ticker"]; !exists || !isString(ticker) {
-			return "market.ticker", false
-		}
-		return "", true
-	case profileMarketsList:
-		rawMarkets, exists := data["markets"]
-		if !exists || !isArray(rawMarkets) {
-			return "markets", false
-		}
-		for _, rawMarket := range rawMarkets.([]any) {
-			market, ok := rawMarket.(map[string]any)
-			if !ok {
-				return "markets[].ticker", false
-			}
-			if ticker, exists := market["ticker"]; !exists || !isString(ticker) {
-				return "markets[].ticker", false
-			}
-			if scenario.RequireTitle {
-				if title, exists := market["title"]; !exists || !isString(title) {
-					return "markets[].title", false
-				}
-			}
-			if scenario.RequireCloseRFC3339 {
-				closeTime, exists := market["close_time"]
-				if !exists || !isString(closeTime) {
-					return "markets[].close_time", false
-				}
-				if _, err := time.Parse(time.RFC3339, closeTime.(string)); err != nil {
-					return "markets[].close_time", false
-				}
-			}
-		}
-		cursor, cursorExists := data["cursor"]
-		if scenario.RequireNextPage {
-			if !cursorExists || !isString(cursor) || cursor == "" {
-				return "cursor", false
-			}
-			return "", true
-		}
-		if cursorExists && cursor != nil && !isString(cursor) {
-			return "cursor", false
-		}
-		return "", true
-	default:
+func scoreTaskResult(scenario driftScenario, data map[string]any) (string, bool) {
+	profile, ok := driftTaskProfiles[scenario.Profile]
+	if !ok {
 		return "profile", false
 	}
+	command, ok := registry.ByName(string(scenario.Profile))
+	if !ok {
+		return "profile", false
+	}
+	fields := append(append([]taskField(nil), profile.RequiredFields...), scenario.TaskFields...)
+	collection := command.ResponseSchema.CollectionField
+	if collection == "" {
+		if path, ok := scoreTaskFields(data, fields, ""); !ok {
+			return path, false
+		}
+	} else {
+		rawItems, exists := data[collection]
+		items, isArray := rawItems.([]any)
+		if !exists || !isArray {
+			return collection, false
+		}
+		for _, item := range items {
+			if path, ok := scoreTaskFields(item, fields, collection+"[]."); !ok {
+				return path, false
+			}
+		}
+	}
+	cursorField := command.ResponseSchema.CursorField
+	if cursorField == "" {
+		return "", true
+	}
+	cursor, cursorExists := data[cursorField]
+	if scenario.RequireNextPage {
+		if !cursorExists || !isString(cursor) || cursor == "" {
+			return cursorField, false
+		}
+		return "", true
+	}
+	if cursorExists && cursor != nil && !isString(cursor) {
+		return cursorField, false
+	}
+	return "", true
+}
+
+func scoreTaskFields(root any, fields []taskField, prefix string) (string, bool) {
+	for _, field := range fields {
+		rendered := prefix + field.Path
+		values, exists := responsePathValues(root, strings.Split(field.Path, "."))
+		if !exists {
+			return rendered, false
+		}
+		for _, value := range values {
+			if !matchesResponseType(value, field.Type) {
+				return rendered, false
+			}
+			if field.Format != "" && !matchesResponseFormat(value, field.Format) {
+				return rendered, false
+			}
+		}
+	}
+	return "", true
 }
 
 func scenarioBodies(scenario driftScenario) []string {
@@ -456,30 +525,25 @@ func validVersionedEnvelope(scenario driftScenario, envelope contract.Envelope) 
 }
 
 func expectedOutputContract(profile driftProfile) string {
-	switch profile {
-	case profileExchange:
-		return "kalshi.output/exchange.status/v1"
-	case profileMarketsList:
-		return "kalshi.output/markets.list/v1"
-	case profileMarketsGet:
-		return "kalshi.output/markets.get/v1"
-	default:
+	command, ok := registry.ByName(string(profile))
+	if !ok {
 		return ""
 	}
+	return command.OutputContractVersion
 }
 
-func projectedMarketKeysMatch(data map[string]any, expected []string) bool {
-	markets, ok := data["markets"].([]any)
+func projectedItemKeysMatch(data map[string]any, collection string, expected []string) bool {
+	items, ok := data[collection].([]any)
 	if !ok {
 		return false
 	}
-	for _, rawMarket := range markets {
-		market, ok := rawMarket.(map[string]any)
-		if !ok || len(market) != len(expected) {
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok || len(item) != len(expected) {
 			return false
 		}
 		for _, key := range expected {
-			if _, exists := market[key]; !exists {
+			if _, exists := item[key]; !exists {
 				return false
 			}
 		}
@@ -536,10 +600,7 @@ func errorDetailsVersionMatches(apiError *contract.APIError, expected string) bo
 	return ok && version == expected
 }
 
-func isObject(value any) bool { _, ok := value.(map[string]any); return ok }
-func isArray(value any) bool  { _, ok := value.([]any); return ok }
 func isString(value any) bool { _, ok := value.(string); return ok }
-func isBool(value any) bool   { _, ok := value.(bool); return ok }
 
 func ratio(numerator, denominator int) float64 {
 	if denominator == 0 {
@@ -559,7 +620,7 @@ func containsDiagnostic(values []string, target string) bool {
 
 func classifyOutcome(scenario driftScenario, result armResult) string {
 	if scenario.Truth == truthCompatible {
-		if result.Accepted && result.OracleOK && result.ValidOutput {
+		if result.Accepted && result.TaskCorrect && result.ValidOutput {
 			return "correct_success"
 		}
 		if !result.Accepted {
@@ -570,7 +631,7 @@ func classifyOutcome(scenario driftScenario, result armResult) string {
 	if result.DriftDetected {
 		return "detected_failure"
 	}
-	if result.Accepted && (!result.OracleOK || !result.ValidOutput) {
+	if result.Accepted && (!result.TaskCorrect || !result.ValidOutput) {
 		return "silent_wrong_success"
 	}
 	if result.Accepted {
