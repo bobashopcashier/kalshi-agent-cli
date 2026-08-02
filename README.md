@@ -1,8 +1,12 @@
-# kalshi-cli
+# Kalshi CLI for AI agents
 
-Stable, bounded JSON for agents using Kalshi.
+`kalshi` is a Go command-line client for Kalshi's Predictions Trade API v2. It
+helps AI agents and scripts browse and trade Kalshi prediction markets through
+stable, bounded JSON contracts.
 
-`kalshi` wraps key Trade API v2 endpoints with versioned output contracts. If Kalshi changes a required field, type, format, or response shape, the CLI fails atomically with `UPSTREAM_SCHEMA_MISMATCH` and names the affected JSON path.
+If Kalshi changes a required field, type, format, or response shape, the CLI
+fails atomically with `UPSTREAM_SCHEMA_MISMATCH` and names the affected JSON
+path.
 
 - Versioned, predictable output
 - Task-specific required fields
@@ -14,6 +18,15 @@ Stable, bounded JSON for agents using Kalshi.
 - Bounded local keyword search over the documented market feed
 
 ## Install
+
+### Latest release with Go
+
+Go 1.26 or newer can install the latest tagged release directly:
+
+```sh
+go install github.com/bobashopcashier/kalshi-cli/cmd/kalshi@latest
+kalshi --version
+```
 
 ### Current `main` with curl
 
@@ -39,8 +52,8 @@ less "$KALSHI_INSTALLER_PATH"
 bash "$KALSHI_INSTALLER_PATH"
 ```
 
-`KALSHI_CLI_VERSION` can pin a release tag once a contract-bearing release is
-published. Pin the installer URL to the same tag for a repeatable install.
+Set `KALSHI_CLI_VERSION` to a release tag and pin the installer URL to the same
+tag for a repeatable source install.
 
 ### Current `main` with Git
 

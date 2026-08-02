@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"kalshi-cli/internal/contract"
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/contract"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 type responseTypeMismatch struct {

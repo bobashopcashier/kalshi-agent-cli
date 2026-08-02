@@ -12,8 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"kalshi-cli/internal/registry"
-	"kalshi-cli/internal/sanitize"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/sanitize"
 )
 
 const maxParamsBytes = 64 << 10

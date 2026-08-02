@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run checks
+        run: make check
+      - name: Build release archives
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist work
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            archive="kalshi-cli_${RELEASE_VERSION#v}_${goos}_${goarch}"
+            mkdir -p "work/$archive"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath -ldflags "-s -w -X main.version=$RELEASE_VERSION" \
+              -o "work/$archive/kalshi" ./cmd/kalshi
+            tar -C "work/$archive" -czf "dist/$archive.tar.gz" kalshi
+          done
+          (
+            cd dist
+            sha256sum ./*.tar.gz > "kalshi-cli_${RELEASE_VERSION#v}_checksums.txt"
+          )
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "kalshi-cli $GITHUB_REF_NAME"

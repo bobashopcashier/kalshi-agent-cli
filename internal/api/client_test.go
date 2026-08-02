@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"kalshi-cli/internal/auth"
+	"github.com/bobashopcashier/kalshi-cli/internal/auth"
 )
 
 type doerFunc func(*http.Request) (*http.Response, error)

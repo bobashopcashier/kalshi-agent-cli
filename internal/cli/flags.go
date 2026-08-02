@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 type options struct {

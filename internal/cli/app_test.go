@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"kalshi-cli/internal/api"
-	"kalshi-cli/internal/auth"
-	"kalshi-cli/internal/contract"
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/api"
+	"github.com/bobashopcashier/kalshi-cli/internal/auth"
+	"github.com/bobashopcashier/kalshi-cli/internal/contract"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

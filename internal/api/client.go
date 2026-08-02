@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"kalshi-cli/internal/auth"
+	"github.com/bobashopcashier/kalshi-cli/internal/auth"
 )
 
 const userAgent = "kalshi-cli/1"

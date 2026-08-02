@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 func command(t *testing.T, name string) registry.Command {
