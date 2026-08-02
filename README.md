@@ -19,6 +19,15 @@ path.
 
 ## Install
 
+### Latest release with Go
+
+Go 1.26 or newer can install the latest tagged release directly:
+
+```sh
+go install github.com/bobashopcashier/kalshi-cli/cmd/kalshi@latest
+kalshi --version
+```
+
 ### Current `main` with curl
 
 The source installer requires Go 1.26 or newer. It downloads current `main`,
@@ -43,8 +52,8 @@ less "$KALSHI_INSTALLER_PATH"
 bash "$KALSHI_INSTALLER_PATH"
 ```
 
-`KALSHI_CLI_VERSION` can pin a release tag once a contract-bearing release is
-published. Pin the installer URL to the same tag for a repeatable install.
+Set `KALSHI_CLI_VERSION` to a release tag and pin the installer URL to the same
+tag for a repeatable source install.
 
 ### Current `main` with Git
 
