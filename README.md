@@ -327,11 +327,15 @@ The fixed regression matrix covers 30 cases over `exchange.status`,
 `markets.get`, and `markets.list`. It is a conformance test, not an empirical
 agent failure rate or a whole-CLI estimate.
 
-| Arm | Compatible cases | Declared breaks detected | All breaks detected | Silent wrong |
+| Arm | Compatible cases | Declared breaks detected | All breaks detected (higher is better) | Silently accepted breaks (lower is better) |
 |---|---:|---:|---:|---:|
 | Unvalidated 2xx JSON decoder | 10/10 | 0/16 | 0/20 | 20/20 |
 | Oracle-equivalent structural validator | 10/10 | 16/16 | 20/20 | 0/20 |
 | `kalshi-cli` with explicit task requirements | 10/10 | **16/16** | **20/20** | **0/20** |
+
+The last two columns measure the same 20 injected breaking responses and are
+complements: detected + silently accepted = 20. The target is therefore
+**20/20 detected and 0/20 silently accepted**.
 
 The CLI included the expected path in all 20 rejections, emitted exact v1 output
 contract identifiers in all 30 cases, and withheld a valid first page when page
