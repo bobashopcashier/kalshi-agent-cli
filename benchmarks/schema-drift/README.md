@@ -27,7 +27,9 @@ The matrix includes compatible changes, declared contract breaks, and four
 extended cases that were previously known coverage gaps. Its primary unsafe
 outcome is `silent_wrong_success`: an arm
 accepts a response that fails the structural task oracle. An explicit schema
-error is a safe detection, not a completed task. Path-presence accuracy checks
+error is a safe detection, not a completed task. This metric is a count of
+breaking cases, so **0/20 is the desired result**; it complements 20/20 explicit
+break detections. Path-presence accuracy checks
 that an error includes the expected JSON path. A two-page case verifies that a
 valid first page followed by a schema-broken second page produces no partial
 stdout. Every CLI result must use the exact expected `kalshi.agent/v1` envelope
