@@ -1,4 +1,4 @@
-# Kalshi CLI for AI agents
+# Kalshi CLI
 
 `kalshi` is a Go command-line client for Kalshi's Predictions Trade API v2. It
 helps AI agents and scripts browse and trade Kalshi prediction markets through
