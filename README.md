@@ -4,10 +4,10 @@ Stable, bounded JSON contracts for agents using Kalshi.
 
 `kalshi` wraps a curated part of Kalshi's Predictions Trade API v2 with
 versioned, per-command output contracts. If Kalshi removes or renames a declared
-required field, changes its JSON type, or breaks a declared wrapper shape, the
-CLI fails atomically with `UPSTREAM_SCHEMA_MISMATCH` and identifies the affected
-JSON path instead of letting an agent continue with a silently malformed
-response.
+or task-required field, changes a declared JSON type or format, or breaks a
+wrapper shape, the CLI fails atomically with `UPSTREAM_SCHEMA_MISMATCH` and
+identifies the affected JSON path instead of letting an agent continue with a
+silently malformed response.
 
 Field projection keeps model context small. The contract makes the remaining
 output predictable.
@@ -16,6 +16,9 @@ output predictable.
   `kalshi.output/<command>/v1` command contracts.
 - **Field-localized drift errors:** for example, `markets[].ticker` in
   `error.details.missing_fields`.
+- **Task-required fields:** `--require-fields` turns selected optional data into
+  an explicit presence contract without pretending every Kalshi field is always
+  populated.
 - **Bounded reads:** explicit page, item, byte, and timeout limits with
   pagination and truncation metadata.
 - **Governed writes:** deny-by-default policies, reviewed confirmation digests,
@@ -87,6 +90,7 @@ kalshi markets list \
   --max-pages 1 \
   --max-items 4 \
   --fields ticker,title,close_time \
+  --require-fields title,close_time \
   --compact
 ```
 
@@ -109,8 +113,9 @@ Selected routing keys from a success look like:
 ```
 
 After an HTTP 200 response and before field projection, the CLI checks declared
-data wrappers, top-level types, and required nested fields. If an upstream
-market loses its required `ticker`, the command exits 6, writes no
+data wrappers, top-level types, required nested fields, selected field
+type/format constraints, and any paths named by `--require-fields`. If an
+upstream market loses its required `ticker`, the command exits 6, writes no
 partial success to stdout, and returns a structured error on stderr. Selected
 keys from that error look like:
 
@@ -131,7 +136,10 @@ keys from that error look like:
 }
 ```
 
-Null or wrong-type required values appear in `type_mismatches`. Extra upstream
+Wrong-type values appear in `type_mismatches`; malformed values with a declared
+semantic format appear in `format_mismatches`. A nonempty declared cursor alias
+without the canonical cursor appears in `unexpected_fields` while
+`missing_fields` names `cursor`; the token itself is not echoed. Extra upstream
 fields remain compatible. Changing the CLI's declared output shape by removing
 or renaming a field, changing its type or requiredness, or changing a wrapper or
 collection shape requires a version bump for the affected command. Upstream
@@ -139,10 +147,14 @@ drift instead causes the existing contract to fail closed.
 
 This is a compatibility floor, not universal semantic validation:
 
-- Absent optional fields selected with `--fields` are materialized as `null`.
-- Same-type semantic changes, such as a malformed timestamp that remains a
-  string, are not automatically detected.
-- An absent or null pagination cursor is treated as end-of-pagination.
+- Absent optional fields selected only with `--fields` are materialized as
+  `null`. Add them to `--require-fields` when the task cannot proceed without a
+  non-null value.
+- Same-type semantic changes are detected only for paths with a declared format
+  contract. The registry currently declares RFC 3339 `date-time` validation for
+  projected market `close_time` values.
+- An absent or null pagination cursor is treated as end-of-pagination unless a
+  declared alias such as `next_cursor` carries a nonempty continuation token.
 - Version identifiers are present and stable, but the current regression matrix
   does not yet simulate a consumer rejecting an unknown future v2 contract.
 
@@ -160,7 +172,7 @@ Inspect one command before generating parameters:
 
 ```sh
 kalshi commands describe markets.list \
-  --fields command.name,command.output_contract_version,command.effect,command.params_schema,command.response_schema.x-projectable-fields,command.response_schema.x-required-fields,command.response_schema.x-required-field-types \
+  --fields command.name,command.output_contract_version,command.effect,command.params_schema,command.response_schema.x-projectable-fields,command.response_schema.x-required-fields,command.response_schema.x-required-field-types,command.response_schema.x-projected-field-contracts,command.response_schema.x-cursor-aliases \
   --compact
 ```
 
@@ -177,6 +189,7 @@ kalshi markets list \
   --environment production \
   --params '{"status":"open","limit":100}' \
   --fields ticker,title,close_time,yes_bid_dollars,yes_ask_dollars \
+  --require-fields title,close_time \
   --max-pages 2 \
   --max-items 150 \
   --max-bytes 1048576 \
@@ -192,6 +205,10 @@ fail before network access.
 network payload. Collection paths are item-relative. Singleton and discovery
 paths are data-root-relative, such as
 `--fields market.ticker,market.title`. Selector typos fail offline.
+`--require-fields` uses the same projectable paths and requires each path to be
+present and non-null in every returned record. If both flags are used, each
+required path must be covered by the projection. Empty result collections remain
+valid.
 
 Cursor-paginated commands default to one page, 100 items, and a 1 MiB final
 output budget. Hard flag ceilings are 10 pages, 1,000 items, and 8 MiB. Partial
@@ -314,12 +331,14 @@ agent failure rate or a whole-CLI estimate.
 |---|---:|---:|---:|---:|
 | Unvalidated 2xx JSON decoder | 10/10 | 0/16 | 0/20 | 20/20 |
 | Oracle-equivalent structural validator | 10/10 | 16/16 | 20/20 | 0/20 |
-| `kalshi-cli` | 10/10 | **16/16** | **16/20** | **4/20** |
+| `kalshi-cli` with explicit task requirements | 10/10 | **16/16** | **20/20** | **0/20** |
 
-The CLI included the expected path in all 16 contract-covered rejections,
-emitted exact v1 identifiers in all 30 cases, and withheld a valid first page
-when page two violated the contract. The four deliberate gaps cover optional
-field loss/type drift, ambiguous cursor removal, and same-type semantic drift.
+The CLI included the expected path in all 20 rejections, emitted exact v1 output
+contract identifiers in all 30 cases, and withheld a valid first page when page
+two violated the contract. The four former gaps are now covered by explicit
+task-required paths, projected type/format contracts, and cursor-alias drift
+detection. The offline registry is `kalshi.registry/v2`; per-command output
+shapes remain `kalshi.output/.../v1`.
 
 Run the matrix with:
 

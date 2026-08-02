@@ -100,8 +100,8 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if err != nil {
 		return a.emitError(cmd.Name, defaultOptions(a.cfg.IsTTY), cmd.Effect, usageError(err))
 	}
-	if len(opts.Fields) > 0 && (opts.Help || opts.DryRun || cmd.Effect.Mutation) {
-		return a.emitError(cmd.Name, opts, cmd.Effect, usageError(errors.New("--fields is available only for successful read results and discovery commands")))
+	if (len(opts.Fields) > 0 || len(opts.RequireFields) > 0) && (opts.Help || opts.DryRun || cmd.Effect.Mutation) {
+		return a.emitError(cmd.Name, opts, cmd.Effect, usageError(errors.New("--fields and --require-fields are available only for successful read results")))
 	}
 	if opts.Help {
 		localEffect := registry.Effect{Class: "local"}
@@ -112,6 +112,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return contract.ExitOK
 	}
 	if err := validateResponseProjection(cmd, opts.Fields); err != nil {
+		return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), MutationStatus: "not_applicable"})
+	}
+	if err := validateRequiredFields(cmd, opts.Fields, opts.RequireFields); err != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), MutationStatus: "not_applicable"})
 	}
 	params, err := normalizeParams(cmd, opts.ParamsRaw, flagParams)
@@ -152,7 +155,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if runErr != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, runErr)
 	}
-	if err := validateOutputContract(cmd, data); err != nil {
+	if err := validateOutputContract(cmd, data, opts.Fields, opts.RequireFields); err != nil {
 		problem := withContractProgress(upstreamSchemaProblem(cmd, err, retry), page, truncation)
 		return a.emitError(cmd.Name, opts, cmd.Effect, problem)
 	}
@@ -196,7 +199,10 @@ func (a *App) runCommands(args []string) int {
 		if err != nil {
 			return a.emitError(name, defaultOptions(a.cfg.IsTTY), registry.Effect{Class: "local"}, usageError(err))
 		}
-		data := map[string]any{"registry_version": "kalshi.registry/v1", "commands": registry.All(), "global_options": globalOptionSchema()}
+		if len(opts.RequireFields) > 0 {
+			return a.emitError(name, opts, registry.Effect{Class: "local"}, usageError(errors.New("--require-fields is available only for network read commands")))
+		}
+		data := map[string]any{"registry_version": registry.Version, "commands": registry.All(), "global_options": globalOptionSchema()}
 		if len(opts.Fields) > 0 {
 			normalized, projectionErr := projectionMap(data)
 			if projectionErr != nil {
@@ -223,6 +229,9 @@ func (a *App) runCommands(args []string) int {
 		opts, _, err := parseOptions(nil, args[2:], a.cfg.IsTTY)
 		if err != nil {
 			return a.emitError(name, defaultOptions(a.cfg.IsTTY), registry.Effect{Class: "local"}, usageError(err))
+		}
+		if len(opts.RequireFields) > 0 {
+			return a.emitError(name, opts, registry.Effect{Class: "local"}, usageError(errors.New("--require-fields is available only for network read commands")))
 		}
 		data := map[string]any{"command": cmd, "global_options": globalOptionSchema()}
 		if len(opts.Fields) > 0 {
@@ -338,6 +347,11 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
 			return nil, nil, visibleRetry(retry), truncation, problem
 		}
+		if err := validateCursorAliases(cmd.ResponseSchema, page); err != nil {
+			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
+		}
 		next, err := validatedPageCursor(page, cursorField)
 		if err != nil {
 			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
@@ -345,7 +359,7 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 			return nil, nil, visibleRetry(retry), truncation, problem
 		}
 		page[cursorField] = next
-		if err := validateOutputContract(cmd, page); err != nil {
+		if err := validateOutputContract(cmd, page, nil, nil); err != nil {
 			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
 			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
 			return nil, nil, visibleRetry(retry), truncation, problem

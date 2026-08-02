@@ -64,6 +64,29 @@ func TestRegistryUniqueAndIntrospectable(t *testing.T) {
 			if len(cmd.ResponseSchema.RequiredFieldTypes) != len(cmd.ResponseSchema.RequiredFields) {
 				t.Errorf("%s required response field types do not match required fields", cmd.Name)
 			}
+			for path, fieldContract := range cmd.ResponseSchema.ProjectedContracts {
+				if !seenFields[path] {
+					t.Errorf("%s constrains non-projectable response field %s", cmd.Name, path)
+				}
+				switch fieldContract.Type {
+				case "object", "array", "string", "boolean", "integer":
+				default:
+					t.Errorf("%s projected response field %s has unsupported type %q", cmd.Name, path, fieldContract.Type)
+				}
+				if fieldContract.Format != "" && (fieldContract.Type != "string" || fieldContract.Format != "date-time") {
+					t.Errorf("%s projected response field %s has unsupported type/format %q/%q", cmd.Name, path, fieldContract.Type, fieldContract.Format)
+				}
+			}
+			seenAliases := map[string]bool{}
+			for _, alias := range cmd.ResponseSchema.CursorAliases {
+				if !cmd.Paginated || cmd.ResponseSchema.CursorField == "" {
+					t.Errorf("%s declares cursor alias %s without pagination", cmd.Name, alias)
+				}
+				if alias == cmd.ResponseSchema.CursorField || seenAliases[alias] {
+					t.Errorf("%s has invalid or duplicate cursor alias %s", cmd.Name, alias)
+				}
+				seenAliases[alias] = true
+			}
 		}
 		for _, required := range cmd.ParamsSchema.Required {
 			if _, ok := cmd.ParamsSchema.Properties[required]; !ok {
@@ -100,6 +123,25 @@ func TestSeriesCommandsExposeCurrentPublicContract(t *testing.T) {
 	get, ok := ByName("series.get")
 	if !ok || get.Method != "GET" || get.Path != "/series/{series_ticker}" {
 		t.Fatalf("unexpected series get contract: %#v", get)
+	}
+}
+
+func TestMarketsExposeProjectedContractsAndCursorAliases(t *testing.T) {
+	list, ok := ByName("markets.list")
+	if !ok {
+		t.Fatal("markets.list is not registered")
+	}
+	if Version != "kalshi.registry/v2" {
+		t.Fatalf("registry version=%q", Version)
+	}
+	if got := list.ResponseSchema.ProjectedContracts["title"]; got.Type != "string" || got.Format != "" {
+		t.Fatalf("title contract=%#v", got)
+	}
+	if got := list.ResponseSchema.ProjectedContracts["close_time"]; got.Type != "string" || got.Format != "date-time" {
+		t.Fatalf("close_time contract=%#v", got)
+	}
+	if len(list.ResponseSchema.CursorAliases) != 1 || list.ResponseSchema.CursorAliases[0] != "next_cursor" {
+		t.Fatalf("cursor aliases=%#v", list.ResponseSchema.CursorAliases)
 	}
 }
 

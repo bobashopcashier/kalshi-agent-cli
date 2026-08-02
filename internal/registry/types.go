@@ -36,6 +36,7 @@ type Schema struct {
 
 type ResponseField struct {
 	Type        string `json:"type"`
+	Format      string `json:"format,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -50,6 +51,8 @@ type ResponseSchema struct {
 	ProjectableFields    []string                 `json:"x-projectable-fields,omitempty"`
 	RequiredFields       []string                 `json:"x-required-fields,omitempty"`
 	RequiredFieldTypes   map[string]string        `json:"x-required-field-types,omitempty"`
+	ProjectedContracts   map[string]ResponseField `json:"x-projected-field-contracts"`
+	CursorAliases        []string                 `json:"x-cursor-aliases"`
 }
 
 type Command struct {
@@ -93,11 +96,23 @@ func boolean(location, description string) Field {
 }
 
 func responseObject(properties map[string]ResponseField, required ...string) ResponseSchema {
-	return ResponseSchema{Dialect: "https://json-schema.org/draft/2020-12/schema", Type: "object", AdditionalProperties: true, Properties: properties, Required: required}
+	return ResponseSchema{
+		Dialect:              "https://json-schema.org/draft/2020-12/schema",
+		Type:                 "object",
+		AdditionalProperties: true,
+		Properties:           properties,
+		Required:             required,
+		ProjectedContracts:   map[string]ResponseField{},
+		CursorAliases:        []string{},
+	}
 }
 
 func responseField(kind, description string) ResponseField {
 	return ResponseField{Type: kind, Description: description}
+}
+
+func responseFieldWithFormat(kind, format, description string) ResponseField {
+	return ResponseField{Type: kind, Format: format, Description: description}
 }
 
 func paginatedResponse(collection string, extra map[string]ResponseField) ResponseSchema {
@@ -107,6 +122,7 @@ func paginatedResponse(collection string, extra map[string]ResponseField) Respon
 	}
 	schema := responseObject(properties, collection, "cursor")
 	schema.CollectionField, schema.CursorField = collection, "cursor"
+	schema.CursorAliases = []string{"next_cursor"}
 	return schema
 }
 
@@ -129,6 +145,11 @@ func withRequiredStringFields(schema ResponseSchema, fields ...string) ResponseS
 	for _, field := range fields {
 		schema.RequiredFieldTypes[field] = "string"
 	}
+	return schema
+}
+
+func withProjectedContracts(schema ResponseSchema, contracts map[string]ResponseField) ResponseSchema {
+	schema.ProjectedContracts = contracts
 	return schema
 }
 

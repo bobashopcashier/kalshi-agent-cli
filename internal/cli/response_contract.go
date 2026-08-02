@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"kalshi-cli/internal/contract"
 	"kalshi-cli/internal/registry"
@@ -18,13 +19,21 @@ type responseTypeMismatch struct {
 	Actual   string `json:"actual"`
 }
 
+type responseFormatMismatch struct {
+	Field    string `json:"field"`
+	Expected string `json:"expected"`
+	Actual   string `json:"actual"`
+}
+
 type responseContractError struct {
-	MissingFields  []string
-	TypeMismatches []responseTypeMismatch
+	MissingFields    []string
+	TypeMismatches   []responseTypeMismatch
+	FormatMismatches []responseFormatMismatch
+	UnexpectedFields []string
 }
 
 func (e *responseContractError) Error() string {
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 4)
 	if len(e.MissingFields) > 0 {
 		parts = append(parts, "missing field(s): "+strings.Join(e.MissingFields, ", "))
 	}
@@ -35,13 +44,24 @@ func (e *responseContractError) Error() string {
 		}
 		parts = append(parts, "type mismatch(es): "+strings.Join(items, ", "))
 	}
+	if len(e.FormatMismatches) > 0 {
+		items := make([]string, len(e.FormatMismatches))
+		for i, mismatch := range e.FormatMismatches {
+			items[i] = fmt.Sprintf("%s (expected %s, got %s)", mismatch.Field, mismatch.Expected, mismatch.Actual)
+		}
+		parts = append(parts, "format mismatch(es): "+strings.Join(items, ", "))
+	}
+	if len(e.UnexpectedFields) > 0 {
+		parts = append(parts, "unexpected field(s): "+strings.Join(e.UnexpectedFields, ", "))
+	}
 	return strings.Join(parts, "; ")
 }
 
-func validateOutputContract(command registry.Command, data map[string]any) error {
+func validateOutputContract(command registry.Command, data map[string]any, selectedFields, requiredFields []string) error {
 	schema := command.ResponseSchema
 	missingSet := map[string]bool{}
 	mismatchByField := map[string]responseTypeMismatch{}
+	formatMismatchByField := map[string]responseFormatMismatch{}
 	for _, name := range schema.Required {
 		if _, exists := data[name]; !exists {
 			missingSet[name] = true
@@ -85,6 +105,63 @@ func validateOutputContract(command registry.Command, data map[string]any) error
 			}
 		}
 	}
+
+	requiredSet := make(map[string]bool, len(requiredFields))
+	for _, field := range requiredFields {
+		requiredSet[field] = true
+	}
+	contractFields := make([]string, 0, len(selectedFields)+len(requiredFields))
+	seenContractFields := map[string]bool{}
+	for _, fields := range [][]string{selectedFields, requiredFields} {
+		for _, field := range fields {
+			if !seenContractFields[field] {
+				seenContractFields[field] = true
+				contractFields = append(contractFields, field)
+			}
+		}
+	}
+	validateProjectedPath := func(root any, field, rendered string) {
+		values, exists := responsePathValues(root, strings.Split(field, "."))
+		if !exists {
+			if requiredSet[field] {
+				missingSet[rendered] = true
+			}
+			return
+		}
+		fieldContract, constrained := schema.ProjectedContracts[field]
+		for _, value := range values {
+			if requiredSet[field] && value == nil {
+				missingSet[rendered] = true
+				continue
+			}
+			if !constrained {
+				continue
+			}
+			if !matchesResponseType(value, fieldContract.Type) {
+				if _, recorded := mismatchByField[rendered]; !recorded {
+					mismatchByField[rendered] = responseTypeMismatch{Field: rendered, Expected: fieldContract.Type, Actual: responseValueType(value)}
+				}
+				continue
+			}
+			if fieldContract.Format != "" && !matchesResponseFormat(value, fieldContract.Format) {
+				if _, recorded := formatMismatchByField[rendered]; !recorded {
+					formatMismatchByField[rendered] = responseFormatMismatch{Field: rendered, Expected: fieldContract.Format, Actual: "invalid"}
+				}
+			}
+		}
+	}
+	if schema.CollectionField == "" {
+		for _, field := range contractFields {
+			validateProjectedPath(data, field, field)
+		}
+	} else if rawItems, ok := data[schema.CollectionField].([]any); ok {
+		for _, field := range contractFields {
+			rendered := schema.CollectionField + "[]." + field
+			for _, item := range rawItems {
+				validateProjectedPath(item, field, rendered)
+			}
+		}
+	}
 	missing := make([]string, 0, len(missingSet))
 	for field := range missingSet {
 		missing = append(missing, field)
@@ -96,10 +173,37 @@ func validateOutputContract(command registry.Command, data map[string]any) error
 		mismatches = append(mismatches, mismatch)
 	}
 	sort.Slice(mismatches, func(i, j int) bool { return mismatches[i].Field < mismatches[j].Field })
-	if len(missing) == 0 && len(mismatches) == 0 {
+	formatMismatches := make([]responseFormatMismatch, 0, len(formatMismatchByField))
+	for _, mismatch := range formatMismatchByField {
+		formatMismatches = append(formatMismatches, mismatch)
+	}
+	sort.Slice(formatMismatches, func(i, j int) bool { return formatMismatches[i].Field < formatMismatches[j].Field })
+	if len(missing) == 0 && len(mismatches) == 0 && len(formatMismatches) == 0 {
 		return nil
 	}
-	return &responseContractError{MissingFields: missing, TypeMismatches: mismatches}
+	return &responseContractError{MissingFields: missing, TypeMismatches: mismatches, FormatMismatches: formatMismatches}
+}
+
+func validateCursorAliases(schema registry.ResponseSchema, data map[string]any) error {
+	if schema.CursorField == "" || len(schema.CursorAliases) == 0 {
+		return nil
+	}
+	if value, exists := data[schema.CursorField]; exists && value != nil && value != "" {
+		return nil
+	}
+	unexpected := make([]string, 0)
+	for _, alias := range schema.CursorAliases {
+		value, exists := data[alias]
+		if !exists || value == nil || value == "" {
+			continue
+		}
+		unexpected = append(unexpected, alias)
+	}
+	if len(unexpected) == 0 {
+		return nil
+	}
+	sort.Strings(unexpected)
+	return &responseContractError{MissingFields: []string{schema.CursorField}, UnexpectedFields: unexpected}
 }
 
 func responsePathValues(value any, segments []string) ([]any, bool) {
@@ -157,6 +261,41 @@ func matchesResponseType(value any, expected string) bool {
 	}
 }
 
+func matchesResponseFormat(value any, expected string) bool {
+	switch expected {
+	case "date-time":
+		raw, ok := value.(string)
+		if !ok {
+			return false
+		}
+		return matchesRFC3339(raw)
+	default:
+		return false
+	}
+}
+
+func matchesRFC3339(raw string) bool {
+	if len(raw) < len("2006-01-02T15:04:05Z") {
+		return false
+	}
+	normalized := []byte(raw)
+	if normalized[10] == 't' {
+		normalized[10] = 'T'
+	}
+	if normalized[len(normalized)-1] == 'z' {
+		normalized[len(normalized)-1] = 'Z'
+	}
+	if _, err := time.Parse(time.RFC3339, string(normalized)); err == nil {
+		return true
+	}
+	if normalized[17] != '6' || normalized[18] != '0' {
+		return false
+	}
+	normalized[17], normalized[18] = '5', '9'
+	_, err := time.Parse(time.RFC3339, string(normalized))
+	return err == nil
+}
+
 func responseValueType(value any) string {
 	if value == nil {
 		return "null"
@@ -188,6 +327,12 @@ func upstreamSchemaProblem(command registry.Command, err error, retry *contract.
 		}
 		if len(contractErr.TypeMismatches) > 0 {
 			details["type_mismatches"] = contractErr.TypeMismatches
+		}
+		if len(contractErr.FormatMismatches) > 0 {
+			details["format_mismatches"] = contractErr.FormatMismatches
+		}
+		if len(contractErr.UnexpectedFields) > 0 {
+			details["unexpected_fields"] = contractErr.UnexpectedFields
 		}
 	}
 	var missingErr *missingProjectionFieldsError

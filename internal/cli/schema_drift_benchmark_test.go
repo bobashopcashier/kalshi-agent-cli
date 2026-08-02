@@ -208,6 +208,9 @@ func assertBenchmarkInvariants(t *testing.T, summaries []armSummary, scenarioCou
 	if cliSummary.DetectedContractBreaks != cliSummary.ContractBreakingCases || cliSummary.OtherBreakingFailures != 0 || cliSummary.UnexpectedCorrect != 0 {
 		t.Fatalf("unexpected CLI breaking result: %+v", cliSummary)
 	}
+	if cliSummary.DetectedKnownGaps != cliSummary.KnownGapCases || cliSummary.DetectedBreaking != cliSummary.BreakingCases || cliSummary.SilentWrongBreaking != 0 {
+		t.Fatalf("CLI did not contain every extended drift case: %+v", cliSummary)
+	}
 	if cliSummary.ExpectedPathPresent != cliSummary.DetectedBreaking {
 		t.Fatalf("CLI expected-path presence=%d/%d", cliSummary.ExpectedPathPresent, cliSummary.DetectedBreaking)
 	}
@@ -226,12 +229,12 @@ func schemaDriftScenarios() []driftScenario {
 	return []driftScenario{
 		{Name: "markets-valid", Mutation: "none", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha"}],"cursor":""}`, Args: marketList},
 		{Name: "markets-additive-field", Mutation: "add optional field", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: marketList},
-		{Name: "markets-additive-field-projected", Mutation: "add field outside requested projection", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: appendFields(marketList, "ticker,title"), ExpectedProjectedMarketKeys: []string{"ticker", "title"}},
+		{Name: "markets-additive-field-projected", Mutation: "add field outside requested projection", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":"Alpha","new_field":true}],"cursor":"","new_top_level":"ok"}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedProjectedMarketKeys: []string{"ticker", "title"}},
 		{Name: "markets-key-reorder", Mutation: "reorder keys", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"cursor":"","markets":[{"title":"Alpha","ticker":"A"}]}`, Args: marketList},
 		{Name: "markets-empty", Mutation: "empty collection", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[],"cursor":""}`, Args: marketList},
 		{Name: "markets-cursor-null", Mutation: "terminal cursor null", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"cursor":null}`, Args: marketList},
 		{Name: "markets-cursor-absent-terminal", Mutation: "terminal cursor absent", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}]}`, Args: marketList},
-		{Name: "markets-close-time-valid", Mutation: "valid same-type semantic value", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"2026-08-01T12:00:00Z"}],"cursor":""}`, Args: appendFields(marketList, "ticker,close_time"), RequireCloseRFC3339: true},
+		{Name: "markets-close-time-valid", Mutation: "valid same-type semantic value", Truth: truthCompatible, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"2026-08-01T12:00:00Z"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,close_time"), "close_time"), RequireCloseRFC3339: true},
 		{Name: "market-get-valid", Mutation: "none", Truth: truthCompatible, Profile: profileMarketsGet, Body: `{"market":{"ticker":"A","title":"Alpha"}}`, Args: marketGet},
 		{Name: "exchange-valid", Mutation: "none", Truth: truthCompatible, Profile: profileExchange, Body: `{"exchange_active":true,"trading_active":true}`, Args: exchange},
 
@@ -252,16 +255,21 @@ func schemaDriftScenarios() []driftScenario {
 		{Name: "exchange-field-string", Mutation: "change required scalar type", Truth: truthBreaking, Profile: profileExchange, Body: `{"exchange_active":"yes","trading_active":true}`, Args: exchange, ExpectedPath: "exchange_active"},
 		{Name: "markets-page-two-ticker-missing", Mutation: "remove required item field after a valid page", Truth: truthBreaking, Profile: profileMarketsList, Bodies: []string{`{"markets":[{"ticker":"A"}],"cursor":"page-2"}`, `{"markets":[{"title":"Beta"}],"cursor":""}`}, Args: marketList, ExpectedPath: "markets[].ticker", AfterPartialPage: true},
 
-		{Name: "markets-title-missing", Mutation: "remove task-required optional field", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"cursor":""}`, Args: appendFields(marketList, "ticker,title"), ExpectedPath: "markets[].title", RequireTitle: true, KnownGap: true},
-		{Name: "markets-title-number", Mutation: "change task-required optional type", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":42}],"cursor":""}`, Args: appendFields(marketList, "ticker,title"), ExpectedPath: "markets[].title", RequireTitle: true, KnownGap: true},
+		{Name: "markets-title-missing", Mutation: "remove task-required optional field", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedPath: "markets[].title", RequireTitle: true, KnownGap: true},
+		{Name: "markets-title-number", Mutation: "change task-required optional type", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","title":42}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,title"), "title"), ExpectedPath: "markets[].title", RequireTitle: true, KnownGap: true},
 		{Name: "markets-cursor-renamed-with-more-pages", Mutation: "rename continuation cursor", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A"}],"next_cursor":"page-2"}`, Args: marketList, ExpectedPath: "cursor", RequireNextPage: true, KnownGap: true},
-		{Name: "markets-close-time-semantic-drift", Mutation: "same JSON type with invalid semantics", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"tomorrow"}],"cursor":""}`, Args: appendFields(marketList, "ticker,close_time"), ExpectedPath: "markets[].close_time", RequireCloseRFC3339: true, KnownGap: true},
+		{Name: "markets-close-time-semantic-drift", Mutation: "same JSON type with invalid semantics", Truth: truthBreaking, Profile: profileMarketsList, Body: `{"markets":[{"ticker":"A","close_time":"tomorrow"}],"cursor":""}`, Args: appendRequiredFields(appendFields(marketList, "ticker,close_time"), "close_time"), ExpectedPath: "markets[].close_time", RequireCloseRFC3339: true, KnownGap: true},
 	}
 }
 
 func appendFields(args []string, fields string) []string {
 	out := append([]string(nil), args...)
 	return append(out, "--fields", fields)
+}
+
+func appendRequiredFields(args []string, fields string) []string {
+	out := append([]string(nil), args...)
+	return append(out, "--require-fields", fields)
 }
 
 func runDirectJSON(scenario driftScenario) armResult {
@@ -496,6 +504,15 @@ func diagnosticPaths(apiError *contract.APIError) []string {
 		}
 	}
 	if mismatches, ok := details["type_mismatches"].([]any); ok {
+		for _, rawMismatch := range mismatches {
+			if mismatch, ok := rawMismatch.(map[string]any); ok {
+				if field, ok := mismatch["field"].(string); ok {
+					paths = append(paths, field)
+				}
+			}
+		}
+	}
+	if mismatches, ok := details["format_mismatches"].([]any); ok {
 		for _, rawMismatch := range mismatches {
 			if mismatch, ok := rawMismatch.(map[string]any); ok {
 				if field, ok := mismatch["field"].(string); ok {

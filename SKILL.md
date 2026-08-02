@@ -12,7 +12,7 @@ Use the compiled `kalshi` binary or `go run ./cmd/kalshi` from this repository.
 1. If the command is not already known from the same cached registry/binary version, run `kalshi commands list --fields registry_version,commands.name,commands.output_contract_version,commands.summary --compact` once and cache the result by `registry_version` for the task.
 2. Before constructing unfamiliar parameters, run `kalshi commands describe <command.name> --fields command.name,command.output_contract_version,command.summary,command.effect,command.params_schema --compact`. Add `command.response_schema,command.docs_url` only when response semantics or upstream documentation are needed.
 3. Prefer one strict `--params` JSON object for generated calls. Convenience flags are safe but must not duplicate fields in `--params`.
-4. Add the narrowest useful `--fields` selection to reads. Paths are item-relative for collection commands and data-root-relative otherwise. Discover allowed paths offline with `kalshi commands describe <command.name> --fields command.response_schema.x-projectable-fields --compact`.
+4. Add the narrowest useful `--fields` selection to reads. Add every field the task cannot proceed without to `--require-fields`; this makes the path present and non-null in every returned record. Paths are item-relative for collection commands and data-root-relative otherwise. Discover allowed paths and constraints offline with `kalshi commands describe <command.name> --fields command.response_schema.x-projectable-fields,command.response_schema.x-projected-field-contracts --compact`.
 5. Set explicit `--max-pages`, `--max-items`, and `--max-bytes` when the defaults do not fit the task. Never emulate an unbounded `--all` loop.
 6. Parse `schema_version`, `output_contract_version`, `ok`, stable `error.code`, `effect`, and `meta.truncation`. Do not scrape prose.
 7. Treat a non-empty `meta.pagination.next_cursor` plus truncation reasons as an explicit continuation decision.
@@ -42,7 +42,7 @@ Prefer compact JSON for model consumption. Use NDJSON only for external line-ori
 
 Projection happens before sanitization and byte accounting. If the result still exceeds `--max-bytes`, the command fails atomically with `OUTPUT_LIMIT`; add or narrow fields, or increase the cap. Never treat an output-limit error as a partial page or continue from a cursor copied from error text.
 
-Required response fields are validated before projection. Treat `UPSTREAM_SCHEMA_MISMATCH` as a contract failure, inspect `error.details.missing_fields` or `error.details.type_mismatches`, and do not guess a renamed field. Optional selected fields that are absent are emitted as `null` to keep the projected shape stable.
+Required response fields are validated before projection. Treat `UPSTREAM_SCHEMA_MISMATCH` as a contract failure, inspect `error.details.missing_fields`, `type_mismatches`, `format_mismatches`, and `unexpected_fields`, and do not guess a renamed field. Optional fields selected only with `--fields` are emitted as `null` when absent; use `--require-fields` whenever `null` would make the task fail later.
 
 Branch on stable error codes and exit categories documented in `README.md`. A network error is retryable only for reads. Writes are never automatically retried.
 

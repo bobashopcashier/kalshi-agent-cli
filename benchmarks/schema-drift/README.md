@@ -19,11 +19,13 @@ HTTP 200 fixtures through three arms:
    syntactically valid HTTP 200 JSON object, with no response-contract checks.
 2. `direct-api-task-validator`: the same decoded JSON plus a handwritten,
    oracle-equivalent structural validator with scenario knowledge.
-3. `kalshi-cli`: the command's compiled response contract and versioned output
+3. `kalshi-cli`: the command's compiled response contract, explicit
+   `--require-fields` task requirements where applicable, and versioned output
    envelope.
 
-The matrix includes compatible changes, declared contract breaks, and known
-coverage gaps. Its primary unsafe outcome is `silent_wrong_success`: an arm
+The matrix includes compatible changes, declared contract breaks, and four
+extended cases that were previously known coverage gaps. Its primary unsafe
+outcome is `silent_wrong_success`: an arm
 accepts a response that fails the structural task oracle. An explicit schema
 error is a safe detection, not a completed task. Path-presence accuracy checks
 that an error includes the expected JSON path. A two-page case verifies that a
@@ -54,12 +56,13 @@ but does not simulate a v1-to-v2 transition or a consumer rejecting an unknown
 contract version. Add that consumer-compatibility case before claiming a measured
 benefit from version negotiation itself.
 
-The known-gap cases deliberately probe beyond the current declared contract:
-an optional selected field disappears, an optional selected field changes
-type, a continuation cursor is renamed where another page is known to exist,
-and a timestamp retains its JSON string type but loses RFC 3339 semantics.
-Keep them in the matrix so improvements reduce silent failures rather than
-quietly narrowing the benchmark.
+The historically named known-gap cases probe an optional task-required field
+disappearing, an optional selected field changing type, a continuation cursor
+being renamed where another page is known to exist, and a timestamp retaining
+its JSON string type while losing RFC 3339 semantics. They now must be contained
+by `--require-fields`, discoverable projected-field contracts, and cursor-alias
+detection. The regression assertion requires 4/4 detections and zero silent
+wrong successes so future changes cannot quietly reopen the gaps.
 
 ## From containment to agent failure rate
 
