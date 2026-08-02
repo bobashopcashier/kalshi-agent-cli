@@ -1,10 +1,13 @@
-.PHONY: build fmt-check vet test race check
+.PHONY: build fmt-check install-check vet test race check
 
 build:
 	go build -o ./bin/kalshi ./cmd/kalshi
 
 fmt-check:
 	test -z "$$(gofmt -l .)"
+
+install-check:
+	sh -n ./install.sh
 
 vet:
 	go vet ./...
@@ -15,4 +18,4 @@ test:
 race:
 	go test -race ./...
 
-check: fmt-check vet test race
+check: fmt-check install-check vet test race
