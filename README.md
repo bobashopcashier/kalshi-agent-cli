@@ -73,7 +73,6 @@ agent failure rate or a whole-CLI estimate.
 | Arm | Compatible cases | Declared breaks detected | All breaks detected (higher is better) | Silently accepted breaks (lower is better) |
 |---|---:|---:|---:|---:|
 | Unvalidated 2xx JSON decoder | 10/10 | 0/16 | 0/20 | 20/20 |
-| Oracle-equivalent structural validator | 10/10 | 16/16 | 20/20 | 0/20 |
 | `kalshi-cli` with explicit task requirements | 10/10 | **16/16** | **20/20** | **0/20** |
 
 The last two columns measure the same 20 injected breaking responses and are
