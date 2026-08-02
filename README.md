@@ -77,6 +77,20 @@ below is currently on `main`; check the
 [releases](https://github.com/bobashopcashier/kalshi-cli/releases) before assuming
 an older package has the same contract.
 
+### OpenClaw plugin
+
+After installing the `kalshi` executable, install the optional, read-only
+`kalshi_query` tool from ClawHub:
+
+```sh
+openclaw plugins install clawhub:@bobashopcashier/kalshi-cli
+```
+
+The plugin exposes allowlisted reads through the CLI's versioned, bounded JSON
+contracts. Trading writes remain in the CLI's governed confirmation and
+idempotency flow. See [plugins/openclaw/README.md](plugins/openclaw/README.md)
+for configuration and the command allowlist.
+
 ## Portfolio, search, and history
 
 Portfolio reads preserve Kalshi's canonical fixed-point strings. `portfolio
