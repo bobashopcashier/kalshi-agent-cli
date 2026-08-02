@@ -19,7 +19,7 @@ func TestValidateOutputContractReportsDeterministicDrift(t *testing.T) {
 			map[string]any{"title": "missing identity"},
 		},
 		"cursor": 42,
-	})
+	}, nil, nil)
 	var contractErr *responseContractError
 	if !errors.As(err, &contractErr) {
 		t.Fatalf("err=%T %v", err, err)
@@ -35,7 +35,7 @@ func TestValidateOutputContractReportsDeterministicDrift(t *testing.T) {
 
 func TestValidateOutputContractAllowsEmptyCollections(t *testing.T) {
 	command, _ := registry.ByName("markets.list")
-	if err := validateOutputContract(command, map[string]any{"markets": []any{}, "cursor": ""}); err != nil {
+	if err := validateOutputContract(command, map[string]any{"markets": []any{}, "cursor": ""}, []string{"title"}, []string{"title"}); err != nil {
 		t.Fatalf("empty collection failed contract validation: %v", err)
 	}
 }
@@ -50,7 +50,7 @@ func TestValidateOutputContractRejectsRequiredItemTypeDrift(t *testing.T) {
 		"number": {ticker: 42, wantActual: "integer"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := validateOutputContract(command, map[string]any{"markets": []any{map[string]any{"ticker": test.ticker}}, "cursor": ""})
+			err := validateOutputContract(command, map[string]any{"markets": []any{map[string]any{"ticker": test.ticker}}, "cursor": ""}, nil, nil)
 			var contractErr *responseContractError
 			if !errors.As(err, &contractErr) || len(contractErr.TypeMismatches) != 1 {
 				t.Fatalf("err=%T %v", err, err)
@@ -60,5 +60,38 @@ func TestValidateOutputContractRejectsRequiredItemTypeDrift(t *testing.T) {
 				t.Fatalf("mismatch=%#v", mismatch)
 			}
 		})
+	}
+}
+
+func TestValidateCursorAliasesIgnoresEmptyAliasAndRejectsNonemptyAlias(t *testing.T) {
+	command, _ := registry.ByName("markets.list")
+	if err := validateCursorAliases(command.ResponseSchema, map[string]any{"markets": []any{}, "next_cursor": ""}); err != nil {
+		t.Fatalf("empty cursor alias should be terminal: %v", err)
+	}
+	err := validateCursorAliases(command.ResponseSchema, map[string]any{"markets": []any{}, "next_cursor": "page-2"})
+	var contractErr *responseContractError
+	if !errors.As(err, &contractErr) {
+		t.Fatalf("err=%T %v", err, err)
+	}
+	if !reflect.DeepEqual(contractErr.MissingFields, []string{"cursor"}) || !reflect.DeepEqual(contractErr.UnexpectedFields, []string{"next_cursor"}) {
+		t.Fatalf("contract error=%#v", contractErr)
+	}
+}
+
+func TestMatchesRFC3339AcceptsStandardsValidCaseAndLeapSecond(t *testing.T) {
+	for _, value := range []string{
+		"2026-08-01T12:00:00Z",
+		"2026-08-01t12:00:00z",
+		"1990-12-31T23:59:60Z",
+		"2026-08-01T12:00:00.123456-07:00",
+	} {
+		if !matchesRFC3339(value) {
+			t.Errorf("valid RFC 3339 date-time rejected: %q", value)
+		}
+	}
+	for _, value := range []string{"tomorrow", "2026-02-30T12:00:00Z", "2026-08-01 12:00:00Z", "2026-08-01T12:00:61Z"} {
+		if matchesRFC3339(value) {
+			t.Errorf("invalid RFC 3339 date-time accepted: %q", value)
+		}
 	}
 }

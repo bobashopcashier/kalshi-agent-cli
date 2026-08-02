@@ -13,6 +13,7 @@ import (
 type options struct {
 	ParamsRaw               string
 	Fields                  []string
+	RequireFields           []string
 	Format                  string
 	Pretty                  bool
 	MaxPages                int
@@ -90,6 +91,12 @@ func parseOptions(cmd *registry.Command, args []string, isTTY bool) (options, ma
 				return opts, nil, err
 			}
 			opts.Fields = fields
+		case "require-fields":
+			fields, err := parseFields(value)
+			if err != nil {
+				return opts, nil, errors.New(strings.Replace(err.Error(), "--fields", "--require-fields", 1))
+			}
+			opts.RequireFields = fields
 		case "output":
 			opts.Format = value
 		case "pretty":
@@ -212,7 +219,7 @@ func canonicalGlobal(name string) string {
 	switch name {
 	case "env":
 		return "environment"
-	case "params", "fields", "output", "pretty", "compact", "ndjson", "max-pages", "max-items", "max-bytes", "timeout", "dry-run", "environment", "credentials-file", "authenticated", "write-policy", "confirm", "max-order-count", "max-order-notional-dollars", "help":
+	case "params", "fields", "require-fields", "output", "pretty", "compact", "ndjson", "max-pages", "max-items", "max-bytes", "timeout", "dry-run", "environment", "credentials-file", "authenticated", "write-policy", "confirm", "max-order-count", "max-order-notional-dollars", "help":
 		return name
 	default:
 		return ""
@@ -231,6 +238,7 @@ func globalOptionSchema() map[string]any {
 	return map[string]any{
 		"params":                     map[string]any{"type": "string", "description": "Strict JSON object; unknown and duplicate keys are rejected."},
 		"fields":                     map[string]any{"type": "string", "description": "Comma-separated registry-validated dotted response fields. Paths are item-relative for collection commands and data-root-relative otherwise."},
+		"require_fields":             map[string]any{"type": "string", "description": "Comma-separated projectable fields that must be present and non-null in every returned item. If --fields is also set, each required path must be covered by the projection."},
 		"output":                     map[string]any{"type": "string", "enum": []string{"json", "ndjson"}, "default": "json"},
 		"pretty":                     map[string]any{"type": "boolean", "description": "Pretty-print JSON."},
 		"compact":                    map[string]any{"type": "boolean", "description": "Compact JSON."},

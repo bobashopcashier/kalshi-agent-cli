@@ -164,6 +164,33 @@ func validateResponseProjection(cmd registry.Command, fields []string) error {
 	return fmt.Errorf("field(s) not projectable for %s: %s; inspect command.response_schema.x-projectable-fields with `kalshi commands describe %s`", cmd.Name, strings.Join(unknown, ", "), cmd.Name)
 }
 
+func validateRequiredFields(cmd registry.Command, projected, required []string) error {
+	if err := validateResponseProjection(cmd, required); err != nil {
+		return err
+	}
+	if len(projected) == 0 {
+		return nil
+	}
+	missing := make([]string, 0)
+	for _, requiredPath := range required {
+		covered := false
+		for _, projectedPath := range projected {
+			if requiredPath == projectedPath || strings.HasPrefix(requiredPath, projectedPath+".") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			missing = append(missing, requiredPath)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf("--require-fields path(s) must be included in --fields: %s", strings.Join(missing, ", "))
+}
+
 func projectionMap(value any) (map[string]any, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
