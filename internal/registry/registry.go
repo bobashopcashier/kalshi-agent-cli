@@ -3,6 +3,7 @@ package registry
 import "sort"
 
 const (
+	Version              = "kalshi.registry/v2"
 	commandSchemaVersion = "kalshi.command/v1"
 	tickerPattern        = `^[A-Z0-9][A-Z0-9._-]{0,127}$`
 	idPattern            = `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`
@@ -62,14 +63,20 @@ var commands = []Command{
 			"tickers":        withPattern(str("query", "Comma-separated market tickers."), `^[A-Z0-9._,-]{1,2048}$`),
 			"mve_filter":     withEnum(str("query", "Include only or exclude multivariate events."), "only", "exclude"),
 		}),
-		ResponseSchema: withRequiredStringFields(withProjectable(paginatedResponse("markets", nil), marketProjectableFields...), "ticker"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-markets",
+		ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(paginatedResponse("markets", nil), marketProjectableFields...), "ticker"), map[string]ResponseField{
+			"title":      responseField("string", "Market title when supplied by Kalshi."),
+			"close_time": responseFieldWithFormat("string", "date-time", "RFC 3339 market close time."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/market/get-markets",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "markets.get", CLIPath: []string{"markets", "get"},
 		Summary: "Get one market by ticker.", Method: "GET", Path: "/markets/{ticker}",
 		Effect: Effect{Class: "read", Network: true}, ParamsSchema: objectSchema(map[string]Field{
 			"ticker": withPattern(str("path", "Market ticker."), tickerPattern),
-		}, "ticker"), ResponseSchema: withRequiredStringFields(withProjectable(responseObject(map[string]ResponseField{"market": responseField("object", "Market object.")}, "market"), prefixedFields("market", marketProjectableFields)...), "market.ticker"), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market",
+		}, "ticker"), ResponseSchema: withProjectedContracts(withRequiredStringFields(withProjectable(responseObject(map[string]ResponseField{"market": responseField("object", "Market object.")}, "market"), prefixedFields("market", marketProjectableFields)...), "market.ticker"), map[string]ResponseField{
+			"market.title":      responseField("string", "Market title when supplied by Kalshi."),
+			"market.close_time": responseFieldWithFormat("string", "date-time", "RFC 3339 market close time."),
+		}), DocsURL: "https://docs.kalshi.com/api-reference/market/get-market",
 	},
 	{
 		SchemaVersion: commandSchemaVersion, Name: "events.list", CLIPath: []string{"events", "list"},
