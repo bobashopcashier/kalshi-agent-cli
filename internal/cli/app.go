@@ -15,11 +15,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"kalshi-cli/internal/api"
-	"kalshi-cli/internal/auth"
-	"kalshi-cli/internal/contract"
-	"kalshi-cli/internal/registry"
-	"kalshi-cli/internal/sanitize"
+	"github.com/bobashopcashier/kalshi-cli/internal/api"
+	"github.com/bobashopcashier/kalshi-cli/internal/auth"
+	"github.com/bobashopcashier/kalshi-cli/internal/contract"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/sanitize"
 )
 
 const (

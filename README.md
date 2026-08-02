@@ -1,8 +1,12 @@
-# kalshi-cli
+# Kalshi CLI for AI agents
 
-Stable, bounded JSON for agents using Kalshi.
+`kalshi` is a Go command-line client for Kalshi's Predictions Trade API v2. It
+helps AI agents and scripts browse and trade Kalshi prediction markets through
+stable, bounded JSON contracts.
 
-`kalshi` wraps key Trade API v2 endpoints with versioned output contracts. If Kalshi changes a required field, type, format, or response shape, the CLI fails atomically with `UPSTREAM_SCHEMA_MISMATCH` and names the affected JSON path.
+If Kalshi changes a required field, type, format, or response shape, the CLI
+fails atomically with `UPSTREAM_SCHEMA_MISMATCH` and names the affected JSON
+path.
 
 - Versioned, predictable output
 - Task-specific required fields

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"kalshi-cli/internal/api"
-	"kalshi-cli/internal/contract"
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/api"
+	"github.com/bobashopcashier/kalshi-cli/internal/contract"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 type driftTruth string

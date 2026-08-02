@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 func TestValidateOutputContractReportsDeterministicDrift(t *testing.T) {

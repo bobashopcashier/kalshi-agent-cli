@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"kalshi-cli/internal/contract"
-	"kalshi-cli/internal/sanitize"
+	"github.com/bobashopcashier/kalshi-cli/internal/contract"
+	"github.com/bobashopcashier/kalshi-cli/internal/sanitize"
 )
 
 func render(w io.Writer, env *contract.Envelope, opts options, collection string) error {

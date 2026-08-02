@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"kalshi-cli/internal/cli"
+	"github.com/bobashopcashier/kalshi-cli/internal/cli"
 )
 
 var version = "dev"

@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"strings"
 
-	"kalshi-cli/internal/api"
-	"kalshi-cli/internal/registry"
+	"github.com/bobashopcashier/kalshi-cli/internal/api"
+	"github.com/bobashopcashier/kalshi-cli/internal/registry"
 )
 
 type plan struct {
