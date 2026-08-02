@@ -199,7 +199,7 @@ func validateCrossFields(command string, params map[string]any) error {
 				problems = append(problems, violation{Field: "market_ticker", Reason: "is required when exchange_index is -1"})
 			}
 		}
-	case "markets.list":
+	case "markets.list", "markets.search":
 		if _, ok := params["min_updated_ts"]; ok {
 			for _, incompatible := range []string{"event_ticker", "status", "tickers", "min_created_ts", "max_created_ts", "min_close_ts", "max_close_ts", "min_settled_ts", "max_settled_ts"} {
 				if _, exists := params[incompatible]; exists {
@@ -209,6 +209,31 @@ func validateCrossFields(command string, params map[string]any) error {
 			if _, hasSeries := params["series_ticker"]; hasSeries && params["mve_filter"] != "exclude" {
 				problems = append(problems, violation{Field: "mve_filter", Reason: "must be exclude when min_updated_ts and series_ticker are combined"})
 			}
+		}
+		if command == "markets.search" {
+			query, _ := params["query"].(string)
+			trimmed := strings.TrimSpace(query)
+			if trimmed == "" {
+				problems = append(problems, violation{Field: "query", Reason: "must contain a non-whitespace keyword"})
+			} else if trimmed != query {
+				problems = append(problems, violation{Field: "query", Reason: "must not have leading or trailing whitespace"})
+			}
+		}
+	case "portfolio.fills":
+		if min, minOK := params["min_ts"].(int64); minOK {
+			if max, maxOK := params["max_ts"].(int64); maxOK && min > max {
+				problems = append(problems, violation{Field: "min_ts", Reason: "must be less than or equal to max_ts"})
+			}
+		}
+	case "candlesticks.get", "candlesticks.historical":
+		start := params["start_ts"].(int64)
+		end := params["end_ts"].(int64)
+		if start > end {
+			problems = append(problems, violation{Field: "start_ts", Reason: "must be less than or equal to end_ts"})
+		}
+		period := params["period_interval"].(int64)
+		if period != 1 && period != 60 && period != 1440 {
+			problems = append(problems, violation{Field: "period_interval", Reason: "must be one of: 1, 60, 1440"})
 		}
 	}
 	if len(problems) > 0 {

@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	mathrand "math/rand/v2"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -111,10 +113,14 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		}
 		return contract.ExitOK
 	}
-	if err := validateResponseProjection(cmd, opts.Fields); err != nil {
+	effectiveFields := opts.Fields
+	if len(effectiveFields) == 0 && len(cmd.DefaultFields) > 0 {
+		effectiveFields = append([]string(nil), cmd.DefaultFields...)
+	}
+	if err := validateResponseProjection(cmd, effectiveFields); err != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), MutationStatus: "not_applicable"})
 	}
-	if err := validateRequiredFields(cmd, opts.Fields, opts.RequireFields); err != nil {
+	if err := validateRequiredFields(cmd, effectiveFields, opts.RequireFields); err != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, &cliError{Exit: contract.ExitUsage, Code: "PROJECTION_FAILED", Message: err.Error(), MutationStatus: "not_applicable"})
 	}
 	params, err := normalizeParams(cmd, opts.ParamsRaw, flagParams)
@@ -155,12 +161,12 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	if runErr != nil {
 		return a.emitError(cmd.Name, opts, cmd.Effect, runErr)
 	}
-	if err := validateOutputContract(cmd, data, opts.Fields, opts.RequireFields); err != nil {
+	if err := validateOutputContract(cmd, data, effectiveFields, opts.RequireFields); err != nil {
 		problem := withContractProgress(upstreamSchemaProblem(cmd, err, retry), page, truncation)
 		return a.emitError(cmd.Name, opts, cmd.Effect, problem)
 	}
-	if len(opts.Fields) > 0 {
-		data, err = projectResponseData(data, opts.Fields, cmd.ResponseSchema.CollectionField, cmd.ResponseSchema.CursorField)
+	if len(effectiveFields) > 0 {
+		data, err = projectResponseData(data, effectiveFields, cmd.ResponseSchema.CollectionField, cmd.ResponseSchema.CursorField)
 		if err != nil {
 			problem := withContractProgress(upstreamSchemaProblem(cmd, err, retry), page, truncation)
 			return a.emitError(cmd.Name, opts, cmd.Effect, problem)
@@ -287,9 +293,55 @@ func (a *App) execute(ctx context.Context, cmd registry.Command, params map[stri
 			problem.Retry = visibleRetry(retry)
 			return nil, nil, nil, contract.Truncation{}, problem
 		}
+		if err := validateNonPaginatedBounds(cmd, data, params, opts); err != nil {
+			return nil, nil, visibleRetry(retry), contract.Truncation{Reasons: []string{}}, upstreamSchemaProblem(cmd, err, visibleRetry(retry))
+		}
 		return data, nil, visibleRetry(retry), contract.Truncation{Reasons: []string{}}, nil
 	}
 	return executePages(execCtx, client, cmd, params, opts, a.cfg.Wait)
+}
+
+func validateNonPaginatedBounds(cmd registry.Command, data map[string]any, params map[string]any, opts options) error {
+	if cmd.Name != "candlesticks.get" && cmd.Name != "candlesticks.historical" {
+		return nil
+	}
+	items, ok := data[cmd.ResponseSchema.CollectionField].([]any)
+	if !ok {
+		return nil // The response contract reports the missing or wrong wrapper type.
+	}
+	if len(items) > opts.MaxItems {
+		return fmt.Errorf("upstream returned %d candlesticks and exceeds --max-items=%d", len(items), opts.MaxItems)
+	}
+	if maximum, valid := candlestickRangeMaximum(params); valid && int64(len(items)) > maximum {
+		return fmt.Errorf("upstream returned %d candlesticks but the requested range permits at most %d", len(items), maximum)
+	}
+	start, _ := params["start_ts"].(int64)
+	end, _ := params["end_ts"].(int64)
+	includePrior, _ := params["include_latest_before_start"].(bool)
+	periodMinutes, _ := params["period_interval"].(int64)
+	periodSeconds := periodMinutes * 60
+	nextBoundary := (start/periodSeconds + 1) * periodSeconds
+	syntheticBeyondEnd := 0
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue // The response contract localizes the item-shape failure.
+		}
+		timestamp, err := strconv.ParseInt(fmt.Sprint(object["end_period_ts"]), 10, 64)
+		if err != nil {
+			continue // The response contract localizes the timestamp type failure.
+		}
+		if timestamp < start {
+			return fmt.Errorf("upstream candlestick end_period_ts=%d is before requested start_ts=%d", timestamp, start)
+		}
+		if timestamp > end {
+			syntheticBeyondEnd++
+			if !includePrior || timestamp != nextBoundary || syntheticBeyondEnd > 1 {
+				return fmt.Errorf("upstream candlestick end_period_ts=%d is after requested end_ts=%d", timestamp, end)
+			}
+		}
+	}
+	return nil
 }
 
 func executePages(ctx context.Context, client *api.Client, cmd registry.Command, params map[string]any, opts options, wait func(context.Context, time.Duration) error) (map[string]any, *contract.Pagination, *contract.Retry, contract.Truncation, *cliError) {
@@ -352,6 +404,11 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
 			return nil, nil, visibleRetry(retry), truncation, problem
 		}
+		if err := validateRequiredCursorPresence(cmd.ResponseSchema, page); err != nil {
+			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
+			problem = withContractProgress(problem, contractProgress(pages, scanned, len(items)), truncation)
+			return nil, nil, visibleRetry(retry), truncation, problem
+		}
 		next, err := validatedPageCursor(page, cursorField)
 		if err != nil {
 			problem := upstreamSchemaProblem(cmd, err, visibleRetry(retry))
@@ -365,11 +422,11 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 			return nil, nil, visibleRetry(retry), truncation, problem
 		}
 		scanned += len(pageItems)
-		if cmd.LocalFilter != "" {
-			target := params[cmd.LocalFilter]
+		if cmd.LocalMatch != nil {
+			target := params[cmd.LocalMatch.Parameter]
 			for _, item := range pageItems {
 				obj, ok := item.(map[string]any)
-				if ok && obj[cmd.LocalFilter] == target {
+				if ok && matchesLocal(cmd.LocalMatch, obj, target) {
 					items = append(items, item)
 				}
 			}
@@ -397,6 +454,33 @@ func executePages(ctx context.Context, client *api.Client, cmd registry.Command,
 	result[cursorField] = cursor
 	pageMeta := &contract.Pagination{PagesFetched: pages, ItemsScanned: scanned, ItemsReturned: len(items), NextCursor: cursor}
 	return result, pageMeta, visibleRetry(retry), truncation, nil
+}
+
+func matchesLocal(match *registry.LocalMatch, item map[string]any, target any) bool {
+	if match == nil {
+		return true
+	}
+	switch match.Mode {
+	case "exact":
+		for _, field := range match.Fields {
+			if item[field] == target {
+				return true
+			}
+		}
+	case "contains_case_insensitive":
+		query, ok := target.(string)
+		if !ok {
+			return false
+		}
+		query = strings.ToLower(query)
+		for _, field := range match.Fields {
+			value, ok := item[field].(string)
+			if ok && strings.Contains(strings.ToLower(value), query) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func doWithRateLimitRetry(ctx context.Context, client *api.Client, cmd registry.Command, req api.Request, wait func(context.Context, time.Duration) error, retry *contract.Retry) (map[string]any, error) {

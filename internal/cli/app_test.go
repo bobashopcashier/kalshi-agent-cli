@@ -70,8 +70,14 @@ func TestDryRunEveryCommandHasZeroCredentialsAndZeroNetwork(t *testing.T) {
 
 func validParams(name string) string {
 	switch name {
+	case "markets.search":
+		return `{"query":"fed"}`
 	case "markets.get", "orderbook.get":
 		return `{"ticker":"TEST-1"}`
+	case "candlesticks.get":
+		return `{"series_ticker":"SERIES-1","ticker":"TEST-1","start_ts":1700000000,"end_ts":1700003600,"period_interval":60}`
+	case "candlesticks.historical":
+		return `{"ticker":"TEST-1","start_ts":1700000000,"end_ts":1700003600,"period_interval":60}`
 	case "events.get":
 		return `{"event_ticker":"EVENT-1"}`
 	case "series.get":
@@ -118,6 +124,509 @@ func TestSeriesListUsesExactTagFilterAndCollectionProjection(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), `"title"`) || strings.Contains(stdout.String(), `"pagination"`) {
 		t.Fatalf("unexpected series output=%s", stdout.String())
+	}
+}
+
+func TestMarketsSearchFiltersLocallyAcrossBoundedPages(t *testing.T) {
+	var calls atomic.Int64
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		if req.URL.Path != "/trade-api/v2/markets" || req.URL.Query().Has("query") {
+			t.Fatalf("request URL=%s", req.URL)
+		}
+		if req.URL.Query().Get("status") != "open" {
+			t.Fatalf("query=%s", req.URL.RawQuery)
+		}
+		switch call {
+		case 1:
+			if req.URL.Query().Get("limit") != "2" || req.URL.Query().Get("cursor") != "" {
+				t.Fatalf("first query=%s", req.URL.RawQuery)
+			}
+			return response(200, `{"markets":[{"ticker":"KXFED-1","event_ticker":"KXFED","yes_sub_title":"Hold","no_sub_title":"Cut"},{"ticker":"KXJOBS-1","event_ticker":"KXJOBS","yes_sub_title":"Above","no_sub_title":"Below"}],"cursor":"page-2"}`), nil
+		case 2:
+			if req.URL.Query().Get("limit") != "1" || req.URL.Query().Get("cursor") != "page-2" {
+				t.Fatalf("second query=%s", req.URL.RawQuery)
+			}
+			return response(200, `{"markets":[{"ticker":"OTHER-1","event_ticker":"OTHER","yes_sub_title":"FED decision","no_sub_title":"Other"}],"cursor":""}`), nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+	args := []string{"markets", "search", "--query", "fEd", "--status", "open", "--limit", "2", "--max-pages", "2", "--max-items", "3", "--fields", "ticker", "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitOK {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 2 || !strings.Contains(stdout.String(), `"ticker":"KXFED-1"`) || !strings.Contains(stdout.String(), `"ticker":"OTHER-1"`) {
+		t.Fatalf("calls=%d output=%s", calls.Load(), stdout.String())
+	}
+	if strings.Contains(stdout.String(), "KXJOBS-1") || !strings.Contains(stdout.String(), `"items_scanned":3,"items_returned":2`) {
+		t.Fatalf("output=%s", stdout.String())
+	}
+}
+
+func TestMarketsSearchRejectsWhitespaceWithoutNetwork(t *testing.T) {
+	var calls atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, errors.New("must not run")
+	})})
+	if code := app.Run(context.Background(), []string{"markets", "search", "--query", "   ", "--compact"}); code != contract.ExitUsage {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 0 || !strings.Contains(stderr.String(), `"field":"query"`) {
+		t.Fatalf("calls=%d stderr=%s", calls.Load(), stderr.String())
+	}
+}
+
+func TestMarketsSearchFailsClosedWhenMatchedFieldDisappears(t *testing.T) {
+	doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"markets":[{"ticker":"KXFED-1","event_ticker":"KXFED","yes_sub_title":"Hold"}],"cursor":""}`), nil
+	})
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+	if code := app.Run(context.Background(), []string{"markets", "search", "--query", "fed", "--compact"}); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"missing_fields":["markets[].no_sub_title"]`) {
+		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestMarketsSearchReportsZeroMatchCompletenessAndResumes(t *testing.T) {
+	var calls atomic.Int64
+	doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if req.URL.Query().Has("query") {
+			t.Fatalf("local query leaked upstream: %s", req.URL.RawQuery)
+		}
+		switch req.URL.Query().Get("cursor") {
+		case "":
+			return response(200, `{"markets":[{"ticker":"OTHER-1","event_ticker":"OTHER","yes_sub_title":"Up","no_sub_title":"Down"},{"ticker":"OTHER-2","event_ticker":"OTHER","yes_sub_title":"Yes","no_sub_title":"No"}],"cursor":"resume-here"}`), nil
+		case "resume-here":
+			return response(200, `{"markets":[{"ticker":"KXFED-1","event_ticker":"KXFED","yes_sub_title":"Hold","no_sub_title":"Cut","title":"must be dropped"}],"cursor":""}`), nil
+		case "terminal-empty":
+			return response(200, `{"markets":[],"cursor":""}`), nil
+		default:
+			t.Fatalf("unexpected cursor %q", req.URL.Query().Get("cursor"))
+			return nil, nil
+		}
+	})
+
+	t.Run("bounded-zero-match-is-inconclusive", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"markets", "search", "--query", "fed", "--max-pages", "1", "--max-items", "2", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		for _, want := range []string{`"markets":[]`, `"next_cursor":"resume-here"`, `"truncated":true`, `"reasons":["max_pages","max_items"]`} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Errorf("missing %s in %s", want, stdout.String())
+			}
+		}
+	})
+
+	t.Run("resume-finds-match-with-default-projection-and-ndjson-summary", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"markets", "search", "--query", "fed", "--cursor", "resume-here", "--max-pages", "1", "--max-items", "2", "--ndjson"}
+		if code := app.Run(context.Background(), args); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		for _, want := range []string{`"record_type":"item"`, `"ticker":"KXFED-1"`, `"event_ticker":"KXFED"`, `"yes_sub_title":"Hold"`, `"no_sub_title":"Cut"`, `"record_type":"summary"`, `"truncated":false`} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Errorf("missing %s in %s", want, stdout.String())
+			}
+		}
+		if strings.Contains(stdout.String(), `"title"`) {
+			t.Fatalf("default projection leaked title: %s", stdout.String())
+		}
+	})
+
+	t.Run("terminal-zero-match-is-complete", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"markets", "search", "--query", "fed", "--cursor", "terminal-empty", "--max-pages", "1", "--max-items", "2", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"markets":[]`) || !strings.Contains(stdout.String(), `"truncated":false`) || strings.Contains(stdout.String(), `"next_cursor"`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	if calls.Load() != 3 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+}
+
+func TestPortfolioPositionsAndPNLUseCanonicalFixedPointProjection(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position := `{"ticker":"KXFED-1","total_traded_dollars":"12.3400","position_fp":"10.50","market_exposure_dollars":"4.2000","realized_pnl_dollars":"1.2300","fees_paid_dollars":"0.1100","last_updated_ts":"2026-08-01T12:00:00Z","unexpected":"drop"}`
+	credentials := func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil }
+
+	t.Run("positions", func(t *testing.T) {
+		var calls atomic.Int64
+		doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			call := calls.Add(1)
+			if req.URL.Path != "/trade-api/v2/portfolio/positions" || req.Header.Get("KALSHI-ACCESS-SIGNATURE") == "" {
+				t.Fatalf("request=%s headers=%v", req.URL, req.Header)
+			}
+			if call == 1 {
+				return response(200, `{"market_positions":[`+position+`],"event_positions":[{"event_ticker":"SHOULD-NOT-LEAK"}],"cursor":"next"}`), nil
+			}
+			return response(200, `{"market_positions":[`+strings.Replace(position, "KXFED-1", "KXFED-2", 1)+`],"event_positions":[],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "positions", "--max-pages", "2", "--max-items", "2", "--compact"}); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if calls.Load() != 2 || !strings.Contains(stdout.String(), `"ticker":"KXFED-2"`) || strings.Contains(stdout.String(), "event_positions") || strings.Contains(stdout.String(), "unexpected") {
+			t.Fatalf("calls=%d output=%s", calls.Load(), stdout.String())
+		}
+	})
+
+	t.Run("pnl", func(t *testing.T) {
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"market_positions":[`+position+`],"event_positions":[],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "pnl", "--compact"}); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		for _, field := range []string{"position_fp", "market_exposure_dollars", "realized_pnl_dollars", "fees_paid_dollars", "last_updated_ts"} {
+			if !strings.Contains(stdout.String(), `"`+field+`"`) {
+				t.Errorf("missing %s in %s", field, stdout.String())
+			}
+		}
+		if strings.Contains(stdout.String(), "total_traded_dollars") || strings.Contains(stdout.String(), "unrealized") || strings.Contains(stdout.String(), "net_pnl") {
+			t.Fatalf("misleading P&L output=%s", stdout.String())
+		}
+	})
+
+	t.Run("missing-realized-pnl", func(t *testing.T) {
+		body := strings.Replace(position, `,"realized_pnl_dollars":"1.2300"`, "", 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"market_positions":[`+body+`],"event_positions":[],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "pnl", "--compact"}); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"missing_fields":["market_positions[].realized_pnl_dollars"]`) {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("invalid-fixed-point", func(t *testing.T) {
+		body := strings.Replace(position, `"position_fp":"10.50"`, `"position_fp":"NaN"`, 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"market_positions":[`+body+`],"event_positions":[],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "positions", "--compact"}); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"field":"market_positions[].position_fp","expected":"fixed-point-count"`) {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+}
+
+func TestPortfolioFillsDropsDeprecatedAliasesAndLocalizesDrift(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := func() (auth.Credentials, error) { return auth.Credentials{KeyID: "kid", PrivateKey: key}, nil }
+	canonical := `{"fill_id":"F1","trade_id":"F1","order_id":"O1","ticker":"KXFED-1","market_ticker":"KXFED-1","outcome_side":"yes","book_side":"bid","count_fp":"2.50","yes_price_dollars":"0.4200","no_price_dollars":"0.5800","is_taker":true,"fee_cost":"0.0100","created_time":"2026-08-01T12:00:00Z","subaccount_number":0,"ts":1}`
+
+	t.Run("canonical", func(t *testing.T) {
+		doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/trade-api/v2/portfolio/fills" || req.Header.Get("KALSHI-ACCESS-SIGNATURE") == "" {
+				t.Fatalf("request=%s", req.URL)
+			}
+			return response(200, `{"fills":[`+canonical+`],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "fills", "--compact"}); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"count_fp":"2.50"`) || !strings.Contains(stdout.String(), `"is_taker":true`) || strings.Contains(stdout.String(), "trade_id") || strings.Contains(stdout.String(), "market_ticker") || strings.Contains(stdout.String(), `"ts"`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	t.Run("missing-count", func(t *testing.T) {
+		body := strings.Replace(canonical, `,"count_fp":"2.50"`, "", 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"fills":[`+body+`],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "fills", "--compact"}); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"missing_fields":["fills[].count_fp"]`) {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("optional-fields-may-be-omitted", func(t *testing.T) {
+		withoutOptional := `{"fill_id":"F1","order_id":"O1","ticker":"KXFED-1","outcome_side":"yes","book_side":"bid","count_fp":"2.50","yes_price_dollars":"0.4200","no_price_dollars":"0.5800","is_taker":true,"fee_cost":"0.0100"}`
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"fills":[`+withoutOptional+`],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "fills", "--compact"}); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if strings.Contains(stdout.String(), "created_time") || strings.Contains(stdout.String(), "subaccount_number") {
+			t.Fatalf("optional fields materialized in default output: %s", stdout.String())
+		}
+	})
+
+	t.Run("nullable-subaccount-is-declared", func(t *testing.T) {
+		body := strings.Replace(canonical, `"subaccount_number":0`, `"subaccount_number":null`, 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"fills":[`+body+`],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "fills", "--fields", "subaccount_number", "--compact"}); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"subaccount_number":null`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	t.Run("omitted-created-time-projects-declared-null", func(t *testing.T) {
+		body := strings.Replace(canonical, `,"created_time":"2026-08-01T12:00:00Z"`, "", 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"fills":[`+body+`],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "fills", "--fields", "created_time", "--compact"}); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"created_time":null`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	for name, body := range map[string]string{
+		"missing-cursor": `{"fills":[]}`,
+		"null-cursor":    `{"fills":[],"cursor":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			doer := roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, body), nil })
+			var stdout, stderr bytes.Buffer
+			app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+			if code := app.Run(context.Background(), []string{"portfolio", "fills", "--compact"}); code != contract.ExitUpstream {
+				t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"missing_fields":["cursor"]`) {
+				t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+			}
+		})
+	}
+
+	t.Run("invalid-fixed-point", func(t *testing.T) {
+		body := strings.Replace(canonical, `"count_fp":"2.50"`, `"count_fp":"2e3"`, 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"fills":[`+body+`],"cursor":""}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+		if code := app.Run(context.Background(), []string{"portfolio", "fills", "--compact"}); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"field":"fills[].count_fp","expected":"fixed-point-count"`) {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+
+	for name, replacement := range map[string]string{
+		"outcome-side": `"outcome_side":"buy"`,
+		"book-side":    `"book_side":"yes"`,
+	} {
+		t.Run("invalid-"+name, func(t *testing.T) {
+			original := `"outcome_side":"yes"`
+			if name == "book-side" {
+				original = `"book_side":"bid"`
+			}
+			body := strings.Replace(canonical, original, replacement, 1)
+			doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return response(200, `{"fills":[`+body+`],"cursor":""}`), nil
+			})
+			var stdout, stderr bytes.Buffer
+			app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2", Credentials: credentials})
+			if code := app.Run(context.Background(), []string{"portfolio", "fills", "--compact"}); code != contract.ExitUpstream {
+				t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+			}
+			field := "outcome_side"
+			if name == "book-side" {
+				field = "book_side"
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"value_mismatches":[{"field":"fills[].`+field+`"`) {
+				t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestCandlestickCommandsUseCurrentContractsAndBounds(t *testing.T) {
+	currentCandle := `{"end_period_ts":1700003600,"yes_bid":{"open_dollars":"0.4000","low_dollars":"0.3900","high_dollars":"0.4100","close_dollars":"0.4050"},"yes_ask":{"open_dollars":"0.4200","low_dollars":"0.4100","high_dollars":"0.4300","close_dollars":"0.4250"},"price":{"open_dollars":"0.4100","low_dollars":"0.4000","high_dollars":"0.4200","close_dollars":"0.4150","mean_dollars":"0.4120","previous_dollars":"0.4050","min_dollars":"0.4000","max_dollars":"0.4200"},"volume_fp":"12.50","open_interest_fp":"20.00"}`
+	historicalCandle := `{"end_period_ts":1600003600,"yes_bid":{"open":"0.4000","low":"0.3900","high":"0.4100","close":"0.4050"},"yes_ask":{"open":"0.4200","low":"0.4100","high":"0.4300","close":"0.4250"},"price":{"open":"0.4100","low":"0.4000","high":"0.4200","close":"0.4150","mean":"0.4120","previous":"0.4050"},"volume":"12.50","open_interest":"20.00"}`
+
+	for _, test := range []struct {
+		name string
+		args []string
+		path string
+		body string
+		want string
+	}{
+		{name: "current", args: []string{"candlesticks", "get", "--series-ticker", "SERIES-1", "--ticker", "TEST-1", "--start-ts", "1700000000", "--end-ts", "1700003600", "--period-interval", "60", "--compact"}, path: "/trade-api/v2/series/SERIES-1/markets/TEST-1/candlesticks", body: `{"ticker":"TEST-1","candlesticks":[` + currentCandle + `]}`, want: `"volume_fp":"12.50"`},
+		{name: "historical", args: []string{"candlesticks", "historical", "--ticker", "TEST-1", "--start-ts", "1600000000", "--end-ts", "1600003600", "--period-interval", "60", "--compact"}, path: "/trade-api/v2/historical/markets/TEST-1/candlesticks", body: `{"ticker":"TEST-1","candlesticks":[` + historicalCandle + `]}`, want: `"volume":"12.50"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doer := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != test.path || req.Header.Get("KALSHI-ACCESS-KEY") != "" {
+					t.Fatalf("request=%s headers=%v", req.URL, req.Header)
+				}
+				return response(200, test.body), nil
+			})
+			var stdout, stderr bytes.Buffer
+			app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+			if code := app.Run(context.Background(), test.args); code != contract.ExitOK {
+				t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("output=%s", stdout.String())
+			}
+		})
+	}
+
+	t.Run("historical-required-price-fields-may-be-null", func(t *testing.T) {
+		nullPrice := `{"end_period_ts":1600003600,"yes_bid":{"open":"0.4000","low":"0.3900","high":"0.4100","close":"0.4050"},"yes_ask":{"open":"0.4200","low":"0.4100","high":"0.4300","close":"0.4250"},"price":{"open":null,"low":null,"high":null,"close":null,"mean":null,"previous":null},"volume":"0.00","open_interest":"20.00"}`
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"ticker":"TEST-1","candlesticks":[`+nullPrice+`]}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"candlesticks", "historical", "--ticker", "TEST-1", "--start-ts", "1600000000", "--end-ts", "1600003600", "--period-interval", "60", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"open":null`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	t.Run("historical-missing-required-price-field", func(t *testing.T) {
+		body := strings.Replace(historicalCandle, `"open":"0.4100",`, "", 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"ticker":"TEST-1","candlesticks":[`+body+`]}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"candlesticks", "historical", "--ticker", "TEST-1", "--start-ts", "1600000000", "--end-ts", "1600003600", "--period-interval", "60", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"missing_fields":["candlesticks[].price.open"]`) {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("live-selected-price-type-drift", func(t *testing.T) {
+		body := strings.Replace(currentCandle, `"open_dollars":"0.4100"`, `"open_dollars":42`, 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"ticker":"TEST-1","candlesticks":[`+body+`]}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"candlesticks", "get", "--series-ticker", "SERIES-1", "--ticker", "TEST-1", "--start-ts", "1700000000", "--end-ts", "1700003600", "--period-interval", "60", "--fields", "price.open_dollars", "--require-fields", "price.open_dollars", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), `"field":"candlesticks[].price.open_dollars","expected":"string","actual":"number"`) {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("live-sparse-continuity-candle", func(t *testing.T) {
+		body := `{"end_period_ts":1700002800,"yes_bid":{"open_dollars":"0.4000","low_dollars":"0.3900","high_dollars":"0.4100","close_dollars":"0.4050"},"yes_ask":{"open_dollars":"0.4200","low_dollars":"0.4100","high_dollars":"0.4300","close_dollars":"0.4250"},"price":{"previous_dollars":"0.4050"},"volume_fp":"0.00","open_interest_fp":"20.00"}`
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"ticker":"TEST-1","candlesticks":[`+body+`]}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"candlesticks", "get", "--series-ticker", "SERIES-1", "--ticker", "TEST-1", "--start-ts", "1700000000", "--end-ts", "1700000000", "--period-interval", "60", "--include-latest-before-start", "--fields", "price.previous_dollars", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitOK {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), `"previous_dollars":"0.4050"`) {
+			t.Fatalf("output=%s", stdout.String())
+		}
+	})
+
+	t.Run("live-rejects-non-boundary-future-candle", func(t *testing.T) {
+		body := strings.Replace(currentCandle, `"end_period_ts":1700003600`, `"end_period_ts":1700002801`, 1)
+		doer := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(200, `{"ticker":"TEST-1","candlesticks":[`+body+`]}`), nil
+		})
+		var stdout, stderr bytes.Buffer
+		app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: doer, BaseURL: "https://example.test/trade-api/v2"})
+		args := []string{"candlesticks", "get", "--series-ticker", "SERIES-1", "--ticker", "TEST-1", "--start-ts", "1700000000", "--end-ts", "1700000000", "--period-interval", "60", "--include-latest-before-start", "--compact"}
+		if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+			t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), "is after requested end_ts") {
+			t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
+		}
+	})
+
+	var calls atomic.Int64
+	var stdout, stderr bytes.Buffer
+	app := New(Config{Stdout: &stdout, Stderr: &stderr, HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, errors.New("must not run")
+	})})
+	args := []string{"candlesticks", "get", "--series-ticker", "SERIES-1", "--ticker", "TEST-1", "--start-ts", "1700000000", "--end-ts", "1700600000", "--period-interval", "1", "--max-items", "10", "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitPolicy {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if calls.Load() != 0 || !strings.Contains(stderr.String(), "exceeds --max-items=10") {
+		t.Fatalf("calls=%d stderr=%s", calls.Load(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	app = New(Config{Stdout: &stdout, Stderr: &stderr, BaseURL: "https://example.test/trade-api/v2", HTTP: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(200, `{"ticker":"TEST-1","candlesticks":[`+currentCandle+`,`+currentCandle+`]}`), nil
+	})})
+	args = []string{"candlesticks", "get", "--series-ticker", "SERIES-1", "--ticker", "TEST-1", "--start-ts", "1700000000", "--end-ts", "1700000000", "--period-interval", "60", "--max-items", "100", "--compact"}
+	if code := app.Run(context.Background(), args); code != contract.ExitUpstream {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "requested range permits at most 1") {
+		t.Fatalf("stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 }
 
@@ -996,7 +1505,7 @@ func TestDiscoveryCanBeProjected(t *testing.T) {
 	if strings.Contains(stdout.String(), "params_schema") || strings.Contains(stdout.String(), "global_options") || !strings.Contains(stdout.String(), `"name":"markets.list"`) {
 		t.Fatalf("output=%s", stdout.String())
 	}
-	if stdout.Len() > 2000 {
+	if stdout.Len() > 3000 {
 		t.Fatalf("projected discovery grew to %d bytes", stdout.Len())
 	}
 }
@@ -1007,7 +1516,7 @@ func TestFieldsEqualsSyntaxAndRepeatedFlagHandling(t *testing.T) {
 	if code := app.Run(context.Background(), []string{"commands", "list", "--fields=registry_version", "--compact"}); code != 0 {
 		t.Fatalf("equals syntax exit=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"registry_version":"kalshi.registry/v3"`) || strings.Contains(stdout.String(), `"commands"`) {
+	if !strings.Contains(stdout.String(), `"registry_version":"kalshi.registry/v4"`) || strings.Contains(stdout.String(), `"commands"`) {
 		t.Fatalf("output=%s", stdout.String())
 	}
 

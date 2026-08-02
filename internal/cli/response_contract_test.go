@@ -160,3 +160,26 @@ func TestMatchesRFC3339AcceptsStandardsValidCaseAndLeapSecond(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchesFixedPointFormats(t *testing.T) {
+	for _, value := range []string{"0.00", "10.50", "-2.00"} {
+		if !matchesResponseFormat(value, "fixed-point-count") {
+			t.Errorf("valid fixed-point count rejected: %q", value)
+		}
+	}
+	for _, value := range []string{"0", "0.5600", "-12.123456"} {
+		if !matchesResponseFormat(value, "fixed-point-dollars") {
+			t.Errorf("valid fixed-point dollars rejected: %q", value)
+		}
+	}
+	for _, value := range []string{"2", "2.0", "2.000", "2e3", "NaN", "+2.00"} {
+		if matchesResponseFormat(value, "fixed-point-count") {
+			t.Errorf("invalid fixed-point count accepted: %q", value)
+		}
+	}
+	for _, value := range []string{".5", "1.", "1.1234567", "2e3", "NaN", "+1.00"} {
+		if matchesResponseFormat(value, "fixed-point-dollars") {
+			t.Errorf("invalid fixed-point dollars accepted: %q", value)
+		}
+	}
+}

@@ -41,3 +41,33 @@ var orderProjectableFields = []string{
 	"maker_fees_dollars", "expiration_time", "created_time", "last_update_time", "self_trade_prevention_type",
 	"order_group_id", "cancel_order_on_pause", "subaccount_number", "exchange_index",
 }
+
+var positionProjectableFields = []string{
+	"ticker", "total_traded_dollars", "position_fp", "market_exposure_dollars",
+	"realized_pnl_dollars", "fees_paid_dollars", "last_updated_ts",
+}
+
+var pnlProjectableFields = []string{
+	"ticker", "position_fp", "market_exposure_dollars", "realized_pnl_dollars",
+	"fees_paid_dollars", "last_updated_ts",
+}
+
+var fillProjectableFields = []string{
+	"fill_id", "order_id", "ticker", "outcome_side", "book_side", "count_fp", "yes_price_dollars",
+	"no_price_dollars", "is_taker", "fee_cost", "created_time", "subaccount_number",
+}
+
+var candlestickProjectableFields = []string{
+	"end_period_ts", "yes_bid", "yes_bid.open_dollars", "yes_bid.low_dollars", "yes_bid.high_dollars",
+	"yes_bid.close_dollars", "yes_ask", "yes_ask.open_dollars", "yes_ask.low_dollars",
+	"yes_ask.high_dollars", "yes_ask.close_dollars", "price", "price.open_dollars",
+	"price.low_dollars", "price.high_dollars", "price.close_dollars", "price.mean_dollars",
+	"price.previous_dollars", "price.min_dollars", "price.max_dollars", "volume_fp", "open_interest_fp",
+}
+
+var historicalCandlestickProjectableFields = []string{
+	"end_period_ts", "yes_bid", "yes_bid.open", "yes_bid.low", "yes_bid.high", "yes_bid.close",
+	"yes_ask", "yes_ask.open", "yes_ask.low", "yes_ask.high", "yes_ask.close", "price",
+	"price.open", "price.low", "price.high", "price.close", "price.mean", "price.previous",
+	"volume", "open_interest",
+}
